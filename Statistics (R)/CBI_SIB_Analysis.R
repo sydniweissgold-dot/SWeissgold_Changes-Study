@@ -24,7 +24,7 @@ data$Group <- factor(data$Group, levels = c("SYNGAP", "TDC"))
 levels(data$Group)
 
 ###check distribution of CBI SIB_Severity 
-shapiro.test(data$SIB_Severity) ###non-parametric
+shapiro.test(data$SIB_Severity) 
 
 
 ###subset data by group (SYNGAP v TDC)
@@ -46,7 +46,7 @@ vine_result_SIB <- cor.test(data_SYNGAP$SIB_Severity, data_SYNGAP$VineABC, metho
 print(vine_result_SIB)
 
 
-##CBI & SIB & ADHD Traits (ConIN, ConHY, CBCL (T-test & DSM)) - n.s.
+##CBI & SIB & ADHD Traits (ConIN, ConHY, CBCL (T-test & DSM)) 
 
 spearman_SYNGAP_ConIN_SIB <- cor.test(data_SYNGAP$SIB_Severity, data_SYNGAP$ConIN, method = "spearman")
 spearman_SYNGAP_ConHY_SIB <- cor.test(data_SYNGAP$SIB_Severity, data_SYNGAP$ConHY, method = "spearman")
@@ -79,11 +79,8 @@ cat("Significant with Bonferroni correction:", spearman_SYNGAP_CBCL_AD_DP_SIB$p.
 
 
 #####run test for CBCL & IBCL combined####
-##(same for EC Conners?)
 
-
-
-###CBI SIB & Autistic traits (SRS: Total, SCI, RRB) - all n.s.
+###CBI SIB & Autistic traits (SRS: Total, SCI, RRB) 
 spearman_SYNGAP_SRS_T_SIB <- cor.test(data_SYNGAP$SIB_Severity, data_SYNGAP$SrsTotal, method = "spearman")
 spearman_SYNGAP_SCI_SIB <- cor.test(data_SYNGAP$SIB_Severity, data_SYNGAP$SrsSCI, method = "spearman")
 spearman_SYNGAP_RRB_SIB <- cor.test(data_SYNGAP$SIB_Severity, data_SYNGAP$SrsRRB, method = "spearman")
@@ -109,7 +106,7 @@ cat("Significant with Bonferroni correction:", spearman_SYNGAP_RRB_SIB$p.value <
 
 
 
-###CBI SIB & Sensory Profile scores - all n.s. 
+###CBI SIB & Sensory Profile scores 
 spearman_SYNGAP_SEN_TOT_SIB <- cor.test(data_SYNGAP$SIB_Severity, data_SYNGAP$SEN.TOT, method = "spearman")
 spearman_SYNGAP_SEN_SK_SIB <- cor.test(data_SYNGAP$SIB_Severity, data_SYNGAP$SEN.SK, method = "spearman")
 spearman_SYNGAP_SEN_AV_SIB <- cor.test(data_SYNGAP$SIB_Severity, data_SYNGAP$SEN.AV, method = "spearman")
@@ -145,7 +142,7 @@ cat("Significant with Bonferroni correction:", spearman_SYNGAP_SEN_REG$p.value <
 
 
 
-###CBI SIB & Sleep - n.s.
+###CBI SIB & Sleep 
 result_sleep_SIB <- cor.test(data$SIB_Severity, data$CSH.TSD33, method = "spearman")
 print(result_sleep_SIB)
 

@@ -12,24 +12,17 @@ library(rstatix)
 
 data <- read.csv("0000_CHANGES_HRV_OUTPUT_MANUAL.csv", header=TRUE)
 
-#checks on data
 head(data)
 
-#check & change to factors
 is.factor((data$Gender))
 is.factor((data$Group))
 data$Gender <- as.factor(data$Gender)
 data$Group <- as.factor(data$Group)
 
-#change to numeric
-# List of columns to convert
 cols_to_numeric <- c("Age")
 
-
-# Convert columns to numeric
 data[cols_to_numeric] <- lapply(data[cols_to_numeric], function(x) as.numeric(as.character(x)))
 
-# Verify the changes
 str(data)  # Check the structure to confirm successful conversion
 
 
@@ -58,20 +51,12 @@ print(gender_count)
 
 
 ##Check for normal distribution##
-###check distribution & do bonferroni correction for multiple comparisons
-
-#results - mixed TRUE / FALSE - will assume non-parametric but need to remember to check! 
-
-# Select only numeric columns (excluding the first column)
 numeric_data <- data[, sapply(data, is.numeric)][, -1]
-# Run Shapiro-Wilk test on all numeric columns (apart from first - participant ID)
 normality_tests <- sapply(numeric_data, function(x) shapiro.test(x)$p.value)
 
-# Bonferroni correction
-alpha <- 0.05  #significance level
-bonferroni_threshold <- alpha / length(normality_tests)  # Adjusted alpha
+alpha <- 0.05
+bonferroni_threshold <- alpha / length(normality_tests) 
 
-# Output results
 normality_results <- data.frame(Variable = names(normality_tests),
                                 P_Value = normality_tests,
                                 Normal_Distribution = normality_tests > bonferroni_threshold)
@@ -81,64 +66,32 @@ print(normality_results)
 
 
 ##check for sig differences in age/gender between case & control
-
-#age (levenes homogeneity & t-test)
 leveneTest(Age ~ Group, data = data) #ns
 
 t_test_age <- t.test(Age ~ Group, data = data)
-print(t_test_age) #ns
+print(t_test_age) 
 
 
 
-##look at age x BPM
-#####need to run outlier filter first!! 
-#filter data
-data_bpm_arousing <- data_cleaned_no_outliers %>%
-  filter(Metric == "bpm", Condition == "arousing")
-
-#run linear regression
-lm_bpm_arousing <- lm(Value ~ Age * Group, data = data_bpm_arousing)
-summary(lm_bpm_arousing)
-
-#plot data
-ggplot(data_bpm_arousing, aes(x = Age, y = Value, color = Group)) +
-  geom_point(size = 3, alpha = 0.7) +
-  geom_smooth(method = "lm", se = TRUE) +
-  labs(title = "BPM (Arousing) by Age and Group",
-       x = "Age",
-       y = "BPM") +
-  theme_minimal()
-
-
-
-#gender (chi square)
+#gender
 contingency_table <- table(data$Group, data$Gender)
 print(contingency_table)
 
 chi_square_test_gender <- chisq.test(contingency_table)
-print(chi_square_test_gender) #n.s.
+print(chi_square_test_gender) 
 
 
-##basic t-tests
-t_test <- t.test(baseline.bpm ~ Group, data = data)
-print(t_test)
+####convert data to long & remove NA's 
 
 
-
-####convert data to long & remove NA's (clean data)
-#necessary for multivariate stats
-
-
-
-# Step 1: Clean column names
+#Clean column names
 names(data) <- names(data) %>%
-  str_replace_all("\\.", "_") %>%       # replace all dots with underscores
-  str_replace_all("_+", "_") %>%        # collapse multiple underscores
-  str_replace_all("_$", "")             # remove trailing underscores
+  str_replace_all("\\.", "_") %>%    
+  str_replace_all("_+", "_") %>%       
+  str_replace_all("_$", "")           
 
 
-
-# Step 2: Pivot longer
+#Pivot longer
 data_long <- data %>%
   pivot_longer(
     cols = -c(Participant_ID, Group, Gender, Age),
@@ -146,19 +99,14 @@ data_long <- data %>%
     names_pattern = "([^_]*)_(.*)",   # split at first underscore
     values_to = "Value"
   )
-
-
-# Check the structure
 head(data_long)
 
-# Remove participants with ANY missing values across all dependent variables
+
 data_cleaned <- data_long %>%
   group_by(Participant_ID) %>%
   filter(!any(is.na(Value))) %>%  # Remove participants with any NA in any metric
   ungroup()  # Ungroup to prevent issues in later analyses
 
-
-# Check structure
 head(data_cleaned)
 
 
@@ -178,15 +126,10 @@ remove_outliers <- function(df) {
     ungroup()
 }
 
-
-# Apply outlier removal
 data_cleaned_no_outliers <- remove_outliers(data_cleaned)
 
-#print how many data points were removed
 cat("Removed", nrow(data_cleaned) - nrow(data_cleaned_no_outliers), "outliers.\n")
 
-
-# Count how many participants were removed bc of outliers
 participants_with_outliers <- setdiff(unique(data_cleaned$Participant_ID), 
                                       unique(data_cleaned_no_outliers$Participant_ID))
 
@@ -194,8 +137,6 @@ cat("Participants with *all* their data removed due to outliers:", length(partic
 print(participants_with_outliers)
 
 
-
-##number of participants who had at least one dataset removed from outliers
 affected_participants <- data_cleaned %>%
   anti_join(data_cleaned_no_outliers, by = c("Participant_ID", "Condition", "Metric", "Value")) %>%
   distinct(Participant_ID)
@@ -205,7 +146,7 @@ cat("Participants with at least one outlier removed:", nrow(affected_participant
 print(affected_participants)
 
 
-###SET CONDITION VARIABLE ORDER###
+
 #define consistent condition ordering
 conditions_to_keep <- c("baseline", "calming", "arousing")
 
@@ -222,8 +163,6 @@ data_no_baseline <- data_cleaned_no_outliers %>%
 
 
 ####SET JITTER FOR PLOTS LATER
-  #if want jitter = box_jitter
-  #if want boxplot (no jitter) = geom_boxplot()
 box_jitter <- list(
   geom_boxplot(outlier.shape = NA, alpha = 0.6),
   geom_jitter(
@@ -237,29 +176,15 @@ box_jitter <- list(
 
 ###Multivariate Stats###
 
-
-##make sure group & condition are factors
 data_cleaned_no_outliers$Participant_ID <- as.factor(data_cleaned_no_outliers$Participant_ID)
 data_cleaned_no_outliers$Condition <- as.factor(data_cleaned_no_outliers$Condition)
 data_cleaned_no_outliers$Group <- as.factor(data_cleaned_no_outliers$Group)
-
-
-##ART MODEL -- for non-parametric & repeated measures 
-##investigate - what does the '1' mean in art model 
 
 ##Run Art ANOVA for specific list of variables
 
 # Define the specific list of metrics you want to analyze
 selected_metrics <- c("bpm", "ibi", "rmssd", "sdnn", "pnn50", "vlf", 
                       "lf", "hf", "sd1", "sd2") 
-
-
-#test to see if random effect is needed: 
-#results - show lots of variance in rmssd between participants so random effect is suitable
-#library(lme4)
-#test_model <- lmer(Value ~ Group * Condition + (1 | Participant.ID), data = data_cleaned_no_outliers %>% filter(Metric == "rmssd"))
-#summary(test_model)
-
 
 
 ###RUN ANOVAs w/OUT BASELINE
@@ -552,7 +477,6 @@ plot_sd2_no_baseline
 #plot_sd1_no_baseline <- plot_sd1_no_baseline
 #plot_sd2_no_baseline <- plot_sd2_no_baseline
 
-# Combine plots with shared legend 
 #combined_plot_no_baseline <-
 # (plot_bpm_no_baseline | plot_ibi_no_baseline | plot_rmssd_no_baseline) / #row 1
 # (plot_sdnn_no_baseline | plot_pnn50_no_baseline | plot_vlf_no_baseline) / #row 2
@@ -562,7 +486,6 @@ plot_sd2_no_baseline
 # theme(legend.position = "right") &
 # labs(x = "Condition")
 
-# Show the plot
 #combined_plot_no_baseline
 
 
@@ -574,7 +497,6 @@ log_metrics <- c(
   "sd1", "sd2"
 )
 
-# Create empty lists to store outputs
 anova_results <- list()
 model_results <- list()
 means_results <- list()
@@ -584,11 +506,9 @@ plot_results <- list()
 # Loop through each metric
 for(metric_name in log_metrics){
   
-  # Filter metric
   metric_data <- data_no_baseline %>%
     filter(Metric == metric_name) %>%
-    
-    # Log transform
+
     mutate(
       LogValue = log(Value)
     )
@@ -655,7 +575,7 @@ ggplot(data_RMSSD_check, aes(x = LogValue)) +
 
 
 
-###run ART ANOVA for log transformed pNN50 - NOT USING (NOT SURE IF ITS CORRECT)
+###run ART ANOVA for log transformed pNN50 
 # Filter pNN50 data
 data_pNN50 <- data_no_baseline %>%
   dplyr::filter(Metric == "pnn50") %>%
@@ -677,7 +597,7 @@ print(anova_pNN50_art)
 
 
 
-##specify results for each metric (interchange) -example here is hf
+##specify results for each metric (interchange) -e.g. hf
 anova_results[["hf"]]
 summary(model_results[["hf"]])
 plot_results[["hf"]]
@@ -735,10 +655,8 @@ for(metric_name in log_metrics){
     
     theme_minimal()
   
-  # Store plot
   plot_results[[metric_name]] <- p
   
-  # Print plot
   print(p)
 }
 
@@ -766,14 +684,12 @@ histogram_results <- list()
 
 for(metric_name in log_metrics){
   
-  # Filter metric and log transform
   metric_data <- data_no_baseline %>%
     filter(Metric == metric_name) %>%
     mutate(
       LogValue = log(Value)
     )
   
-  # Histogram
   p_hist <- ggplot(metric_data, aes(x = LogValue)) +
     
     geom_histogram(
@@ -791,26 +707,17 @@ for(metric_name in log_metrics){
     
     theme_minimal()
   
-  # Store histogram
   histogram_results[[metric_name]] <- p_hist
   
-  # Print histogram
   print(p_hist)
 }
 
 
 
 ##Make a Poincare plot
-
-# Read the file
 rr_data <- read.csv("14CHA_cleaned_peaks.arousing.csv", header = FALSE)
-
-# Assign column names (adjust if your actual file has headers)
 colnames(rr_data) <- c("PeakIndex", "Timestamp", "RR")
-# Ensure RR is numeric
 rr_data$RR <- as.numeric(rr_data$RR)
-
-# Check structure
 head(rr_data)
 
 
@@ -830,9 +737,7 @@ ggplot(poincare_data, aes(x = RR_n, y = RR_n1)) +
 
 
 
-
-##making arousing & calming plots for 1 participant: 14CHA
-# Load and label each condition
+##making arousing & calming plots for 1 participant
 load_rr_data <- function(file_path, condition_label) {
   df <- read.csv(file_path, header = FALSE)
   colnames(df) <- c("PeakIndex", "Timestamp", "RR")
@@ -841,7 +746,6 @@ load_rr_data <- function(file_path, condition_label) {
   return(df)
 }
 
-# Load both files
 rr_arousing <- load_rr_data("14CHA_cleaned_peaks.arousing.csv", "Arousing")
 rr_calming <- load_rr_data("14CHA_cleaned_peaks.calming.csv", "Calming")
 
@@ -867,12 +771,10 @@ make_poincare_plot <- function(data, title_text) {
     )
 }
 
-# Create both plots
+# Create plot
 plot_calming <- make_poincare_plot(rr_calming, "Calming")
 plot_arousing <- make_poincare_plot(rr_arousing, "Arousing")
 
-
-# Combine side-by-side
 (plot_calming + plot_arousing) +
   plot_annotation(tag_levels = "A") &
   theme(plot.tag = element_text(size = 16, face = "bold"),
@@ -883,10 +785,7 @@ plot_arousing <- make_poincare_plot(rr_arousing, "Arousing")
 
 ####MAKE PLOTS (w/out baseline)
 
-
-
 ###MAKE BPM & IBI PLOT####
-
 
 #PLOT
 combined_HR_plot <- ggarrange(
@@ -907,8 +806,6 @@ combined_HR_plot
 
 
 ###MAKE TIME-DOMAIN PLOT - w/out baseline####
-
-#make sure condition labels are capitalised
 plot_rmssd_no_baseline <- plot_rmssd_no_baseline
 
 plot_sdnn_no_baseline <- plot_sdnn_no_baseline
@@ -937,8 +834,6 @@ combined_time_domain_plot
 
 
 ###MAKE FREQUENCY-DOMAIN PLOT####
-
-#make sure condition labels are capitalised
 plot_vlf_no_baseline <- plot_vlf_no_baseline
 
 plot_lf_no_baseline <- plot_lf_no_baseline

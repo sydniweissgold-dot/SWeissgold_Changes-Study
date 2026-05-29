@@ -1,0 +1,679 @@
+#### FINAL HRV SCRIPT #####
+
+## import libs (if you don't have -> 'pip install heartpy' in terminal)
+import heartpy as hp
+import mne
+import numpy as np
+import os
+import pandas as pd
+from pathlib import Path
+from datetime import datetime, timedelta, time
+import matplotlib
+from heartpy import enhance_peaks
+from scipy.signal import welch
+from matplotlib.widgets import Button, TextBox
+from scipy.interpolate import interp1d
+from numpy import diff, mean, std, sqrt
+
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+plt.ion()
+
+##check matplotlib is working
+print(matplotlib.get_backend())
+plt.switch_backend("TkAgg")  # or "QtAgg"
+
+
+## import ecg data
+path = Path('U:/Datastore/CMVM/sbms/groups/INCR-PWC-psychiatry/CHANGES/Data/ActiHeartData')# define path to participant folder
+os.chdir(path)  # change working directory to path
+ecg = '31CHA.edf'  # define path to ECG data
+sampling_freq = 1024  # define sampling frequency of ECG data
+ecg_raw = mne.io.read_raw_edf(ecg, exclude=('X', 'Y', 'Z'), preload=True) #import the ECG .edf file
+ecg_array = ecg_raw.get_data() #extract only the 1 x nsample array (heartpy does not take RawEDF file format)
+ecg_flat = np.ndarray.flatten(ecg_array) #flatten data to create a 1d array
+
+
+## visualise data
+plt.plot(ecg_flat)
+
+
+
+###Convert x-axis values to time of day - then cut out noise in beginning and end
+
+# Generate timestamps in time-of-day format
+start_time = ecg_raw.info['meas_date']  # Get the recording start time from the edf file
+if start_time is None:
+    start_time = datetime.now()  # Fallback if no start time available
+timestamps = [start_time + timedelta(seconds=i / sampling_freq) for i in range(len(ecg_flat))]
+
+
+# Plot the full ECG recording with time-of-day on the x-axis
+plt.figure()
+plt.plot(timestamps, ecg_flat)
+plt.gcf().autofmt_xdate()
+plt.title("Full ECG Recording")
+plt.xlabel("Time of Day")
+plt.ylabel("ECG Signal")
+plt.show()
+
+
+
+#####extracting times from excel doc######
+
+# Define path to excel
+excel_path = Path('U:/Datastore/CMVM/sbms/groups/INCR-PWC-psychiatry/CHANGES/Data/Psychopy Data/0000_compiled psychopy data.xlsx')
+
+# Load the Excel file
+time_excel = pd.read_excel(excel_path)
+
+# Extract row based on ECG filename
+participant_row = time_excel[time_excel['Participant ID'] == ecg]
+
+# Ensure the participant is found
+if participant_row.empty:
+    raise ValueError(f"No matching participant found for: {ecg}")
+
+# Extract start and end cut values
+start_cut = participant_row['Start Cut'].values[0] #get values for Start Cut
+end_cut = participant_row['End Cut'].values[0] #get values for End Cut
+
+# Convert cut times from seconds to indices
+start_index = int(start_cut * sampling_freq) #remove first x seconds
+end_index = len(ecg_flat) - int(end_cut * sampling_freq) #remove last x seconds
+
+# Slice the ECG data using the extracted values
+sliced_ecg_flat = ecg_flat[start_index:end_index]
+sliced_timestamps = timestamps[start_index:end_index]
+
+# Plot the sliced ECG recording
+plt.figure()
+plt.plot(sliced_timestamps, sliced_ecg_flat)
+plt.gcf().autofmt_xdate()
+plt.title("Sliced ECG Recording")
+plt.xlabel("Time of Day")
+plt.ylabel("ECG Signal")
+plt.show()
+
+
+
+###now: dividing the ecg up into 3 blocks: baseline, calming, arousing
+
+##extracting from excel
+
+
+# Extract relevant time values from the Excel file for this participant
+start_time_str = participant_row['Recording Start Time'].values[0]  # Assuming format is HH:MM:SS
+baseline_start_str = participant_row['Baseline Start'].values[0]
+baseline_end_str = participant_row['Baseline End'].values[0]
+arousing_start_str = participant_row['Arousing Start'].values[0]
+arousing_end_str = participant_row['Arousing End'].values[0]
+calming_start_str = participant_row['Calming Start'].values[0]
+calming_end_str = participant_row['Calming End'].values[0]
+
+
+start_time = datetime.combine(datetime.today(), start_time_str)
+baseline_start = datetime.combine(datetime.today(), baseline_start_str)
+baseline_end = datetime.combine(datetime.today(), baseline_end_str)
+arousing_start = datetime.combine(datetime.today(), arousing_start_str)
+arousing_end = datetime.combine(datetime.today(), arousing_end_str)
+calming_start = datetime.combine(datetime.today(), calming_start_str)
+calming_end = datetime.combine(datetime.today(), calming_end_str)
+
+
+# Convert to seconds from the recording start time
+baseline_start_time = (baseline_start - start_time).total_seconds()
+baseline_end_time = (baseline_end - start_time).total_seconds()
+arousing_start_time = (arousing_start - start_time).total_seconds()
+arousing_end_time = (arousing_end - start_time).total_seconds()
+calming_start_time = (calming_start - start_time).total_seconds()
+calming_end_time = (calming_end - start_time).total_seconds()
+
+# Convert to indices
+baseline_start_idx = int(baseline_start_time * sampling_freq)
+baseline_end_idx = int(baseline_end_time * sampling_freq)
+arousing_start_idx = int(arousing_start_time * sampling_freq)
+arousing_end_idx = int(arousing_end_time * sampling_freq)
+calming_start_idx = int(calming_start_time * sampling_freq)
+calming_end_idx = int(calming_end_time * sampling_freq)
+
+
+# Convert global block boundaries to local indices relative to the sliced data
+local_baseline_start = baseline_start_idx - start_index
+local_baseline_end   = baseline_end_idx - start_index
+local_arousing_start = arousing_start_idx - start_index
+local_arousing_end   = arousing_end_idx - start_index
+local_calming_start  = calming_start_idx - start_index
+local_calming_end    = calming_end_idx - start_index
+
+# Create the sliced timestamps for each block using local boundaries
+sliced_timestamps_arr = {
+    'baseline': sliced_timestamps[local_baseline_start:local_baseline_end],
+    'arousing': sliced_timestamps[local_arousing_start:local_arousing_end],
+    'calming': sliced_timestamps[local_calming_start:local_calming_end]
+}
+
+
+# Slice the ECG signal for each block
+baseline_ecg = ecg_flat[baseline_start_idx:baseline_end_idx]
+arousing_ecg = ecg_flat[arousing_start_idx:arousing_end_idx]
+calming_ecg = ecg_flat[calming_start_idx:calming_end_idx]
+
+# Verify the splits
+print("Baseline block duration (seconds):", baseline_end_time - baseline_start_time)
+print("Arousing block duration (seconds):", arousing_end_time - arousing_start_time)
+print("Calming block duration (seconds):", calming_end_time - calming_start_time)
+
+
+
+# Enhance ECG for each block (baseline, arousing, and calming): get rid of peaks that are not heart beats
+baseline_enhance_ecg = hp.enhance_ecg_peaks(baseline_ecg, sampling_freq, iterations=2, aggregation='mean', notch_filter=True)
+arousing_enhance_ecg = hp.enhance_ecg_peaks(arousing_ecg, sampling_freq, iterations=2, aggregation='mean', notch_filter=True)
+calming_enhance_ecg = hp.enhance_ecg_peaks(calming_ecg, sampling_freq, iterations=2, aggregation='mean', notch_filter=True)
+
+
+
+### Perform HeartPy HRV analysis for each block and retrieve working_data and measures
+baseline_working_data, baseline_measures = hp.process(baseline_enhance_ecg, sample_rate=sampling_freq, report_time=True, calc_freq=True)
+arousing_working_data, arousing_measures = hp.process(arousing_enhance_ecg, sample_rate=sampling_freq, report_time=True, calc_freq=True)
+calming_working_data, calming_measures = hp.process(calming_enhance_ecg, sample_rate=sampling_freq, report_time=True, calc_freq=True)
+
+
+####ADDED
+# Calculate timestamps for RR intervals in each block
+def rr_to_timestamps(start_idx, rr_list, sampling_freq, full_timestamps):
+    if start_idx >= len(full_timestamps):
+        raise IndexError(f"Start index {start_idx} is out of range for timestamps of length {len(full_timestamps)}")
+
+    start_time = full_timestamps[start_idx]  # starting timestamp for block
+    rr_sec = np.array(rr_list) / 1000.0
+    cumulative_times = np.cumsum(rr_sec)
+    return [start_time + timedelta(seconds=t) for t in cumulative_times]
+
+# Get RR intervals
+baseline_rr = baseline_working_data['RR_list']
+arousing_rr = arousing_working_data['RR_list']
+calming_rr = calming_working_data['RR_list']
+
+##debug:
+print("Length of baseline RR list:", len(baseline_rr))
+print("Length of baseline timestamps:", len(sliced_timestamps_arr['baseline']))
+print("Length of arousing RR list:", len(arousing_rr))
+print("Length of arousing timestamps:", len(sliced_timestamps_arr['arousing']))
+print("Length of calming RR list:", len(calming_rr))
+print("Length of calming timestamps:", len(sliced_timestamps_arr['calming']))
+
+
+# Calculate corresponding RR timestamps using local indices for each block
+#baseline_rr_times = rr_to_timestamps(0, baseline_rr, sampling_freq, sliced_timestamps_arr['baseline'])
+#arousing_rr_times = rr_to_timestamps(0, arousing_rr, sampling_freq, sliced_timestamps_arr['arousing'])
+#calming_rr_times = rr_to_timestamps(0, calming_rr, sampling_freq, sliced_timestamps_arr['calming'])
+
+# Extract peak indices (global or block-relative based on your pipeline)
+baseline_peak_indices = baseline_working_data['peaklist']
+arousing_peak_indices = arousing_working_data['peaklist']
+calming_peak_indices = calming_working_data['peaklist']
+
+# Use the first peak index relative to the start of the sliced block
+baseline_relative_idx = baseline_peak_indices[0]
+arousing_relative_idx = arousing_peak_indices[0]
+calming_relative_idx = calming_peak_indices[0]
+
+#Make sure the index is within bounds
+assert baseline_relative_idx < len(sliced_timestamps_arr['baseline']), "Baseline index out of range"
+assert arousing_relative_idx < len(sliced_timestamps_arr['arousing']), "Arousing index out of range"
+assert calming_relative_idx < len(sliced_timestamps_arr['calming']), "Calming index out of range"
+
+
+#ensure number of RR intervals matches the number of available timestamps from the peak onward
+def truncate_rr_and_check(rr_list, rel_idx, timestamps_arr):
+    # Max usable length from this starting index
+    max_len = len(timestamps_arr) - rel_idx
+    if len(rr_list) > max_len:
+        print(f"Truncating RR list from {len(rr_list)} to {max_len} due to limited timestamps.")
+        rr_list = rr_list[:max_len]
+    return rr_list
+
+
+# Compute RR timestamps
+#truncated because of misaligned peaks
+baseline_rr = truncate_rr_and_check(baseline_rr, baseline_relative_idx, sliced_timestamps_arr['baseline'])
+arousing_rr = truncate_rr_and_check(arousing_rr, arousing_relative_idx, sliced_timestamps_arr['arousing'])
+calming_rr = truncate_rr_and_check(calming_rr, calming_relative_idx, sliced_timestamps_arr['calming'])
+
+
+
+##define function for process_rr (essentially time-domain analysis with the rr-intervals that are output post manual peak detection)
+def process_rr(rr_intervals_ms, label=''):
+    # Convert input list to NumPy array and remove NaNs
+    rr = np.array(rr_intervals_ms)
+    rr = rr[~np.isnan(rr)]
+
+    # Compute differences between successive RR intervals (for RMSSD, NN50, etc.)
+    diff_rr = np.diff(rr)
+
+    # Count number of adjacent RR intervals that differ by more than 50ms (NN50)
+    nn50 = np.sum(np.abs(diff_rr) > 50)
+
+    # Calculate percentage of NN50 over total RR differences
+    pnn50 = 100.0 * nn50 / len(diff_rr)
+
+    # Standard deviation of RR intervals (SDNN)
+    sdnn = np.std(rr)
+
+    # Root mean square of successive differences (RMSSD)
+    rmssd = np.sqrt(np.mean(diff_rr**2))
+
+    # Average RR interval (AVNN) and its inverse in beats per minute (BPM)
+    avnn = np.mean(rr)
+    ibi = avnn
+    bpm = 60000.0 / avnn if avnn != 0 else 0
+
+    # Poincaré plot SD1 and SD2 (nonlinear HRV features)
+    sd1 = np.sqrt(np.std(diff_rr, ddof=1)**2 / 2)
+    sd2 = np.sqrt(2 * std(rr, ddof=1)**2 - sd1**2)
+
+    # Ratio of SD1 to SD2
+    sd1sd2 = sd1 / sd2 if sd2 != 0 else np.nan
+
+    # Combine time-domain measures into a dictionary
+    time_metrics = {
+        'RMSSD (ms)': rmssd,
+        'SDNN (ms)': sdnn,
+        'AVNN (ms)': avnn,
+        'IBI (ms)': ibi,
+        'BPM': bpm,
+        'NN50': nn50,
+        'pNN50 (%)': pnn50,
+        'SD1 (ms)': sd1,
+        'SD2 (ms)': sd2,
+        'SD1/SD2': sd1sd2
+    }
+
+    # Get frequency domain features using separate function
+    freq_metrics = frequency_domain_measures(rr)
+
+    # Merge and return all HRV metrics
+    all_metrics = {**time_metrics, **freq_metrics}
+    return all_metrics
+
+##define funtion to do frequency based analysis (welch's method) with rr-intervals
+def frequency_domain_measures(rr_intervals_ms):
+    # Convert RR list to NumPy array and remove NaNs
+    rr = np.array(rr_intervals_ms)
+    rr = rr[~np.isnan(rr)]  # Remove NaN values (NaN = not a number)
+
+    # Convert from ms to seconds for processing (for frequency calculation) (*necessary bc frequency calculations i.e. PSD are done in sec)
+    rr_sec = rr / 1000.0  # Convert to seconds for PSD calculation
+
+    # Create time axis by cumulatively summing intervals
+    time_sec = np.cumsum(rr_sec)
+    time_sec -= time_sec[0]  # Start at 0
+
+    # Interpolate RR data to a constant frequency (4Hz)
+    freq = 4.0
+    interpolated_time = np.arange(0, time_sec[-1], 1.0 / freq)
+
+    # Interpolation using cubic spline
+    interp_func = interp1d(time_sec, rr_sec, kind='cubic')
+    interpolated_rr = interp_func(interpolated_time)
+
+    # Power spectral density estimation using Welch's method
+    fxx, pxx = welch(interpolated_rr, fs=freq, nperseg=min(256, len(interpolated_rr)))
+
+    # Define standard HRV frequency bands in Hz
+    vlf_band = (0.003, 0.04)
+    lf_band = (0.04, 0.15)
+    hf_band = (0.15, 0.4)
+
+    # Helper to calculate power in a given frequency band
+    def band_power(freqs, power, band):
+        mask = (freqs >= band[0]) & (freqs < band[1])
+        return np.trapz(power[mask], freqs[mask])  # Trapezoidal integration
+
+    # Convert the power from (s²) to (ms²), scale factor needed for final output
+    scaling_factor = 1000 ** 2  # Convert seconds squared to milliseconds squared
+
+    # Calculate power in each frequency band (now in ms²)
+    vlf = band_power(fxx, pxx * scaling_factor, vlf_band)
+    lf = band_power(fxx, pxx * scaling_factor, lf_band)
+    hf = band_power(fxx, pxx * scaling_factor, hf_band)
+    total = vlf + lf + hf
+    vlf_pct = vlf / total
+    lf_pct = lf / total
+    hf_pct = hf / total
+
+    # LF/HF ratio is often used as a sympathovagal balance indicator
+    lf_hf = lf / hf if hf != 0 else np.nan
+
+    # Return dictionary of frequency-domain metrics in ms²
+    return {
+        'VLF power': vlf,
+        'LF power': lf,
+        'HF power': hf,
+        'Total power': total,
+        'LF/HF ratio': lf_hf,
+        'VLF perc': vlf_pct,
+        'LF perc': lf_pct,
+        'HF perc': hf_pct
+    }
+
+
+##create function to do manual peak review
+class PeakReviewer:
+    def __init__(self, signal, peaks, fs):
+        self.signal = signal
+        self.fs = fs
+        self.fig, self.ax = plt.subplots()
+        self.peaks = list(peaks)  # modifiable copy
+        self.original_peaks = list(peaks)
+        self.scatter = None
+        self.adding_peak_mode = False
+        self.cut_mode = False
+        self.cut_start = None
+        self.cut_end = None
+        self.cut_lines = []  # Initialize the list for storing cut lines
+        self.cut_history = [] # to store cut ranges
+
+        self.plot_signal()
+
+        # Add button for adding peaks
+        add_ax = self.fig.add_axes([0.7, 0.01, 0.1, 0.05])  # x, y, width, height
+        self.add_button = Button(add_ax, 'Add Peak')
+        self.add_button.on_clicked(self.toggle_add_peak_mode)
+
+        # Add button for 'Cut Region'
+        cut_ax = self.fig.add_axes([0.81, 0.01, 0.1, 0.05])
+        self.cut_button = Button(cut_ax, 'Cut Region')
+        self.cut_button.on_clicked(self.toggle_cut_mode)
+
+        # Add TextBox to show status (instructions, feedback)
+        self.status_ax = self.fig.add_axes([0.01, 0.01, 0.65, 0.05])  # x, y, width, height
+        self.status_box = TextBox(self.status_ax, '',
+                                  initial="Instructions: Right-click to remove peaks. Shift+Left click to set start/end for cutting.")
+
+        self.cid_click = self.fig.canvas.mpl_connect('button_press_event', self.onclick)
+
+        print("Instructions:")
+        print("- Right-click near a peak to remove it.")
+        print("- Click 'Add Peak' and then left-click where you want to add a peak.")
+
+    #function to plot ecg signal and its peaks
+    def plot_signal(self):
+        self.ax.plot(self.signal, label="ECG")
+        self.scatter = self.ax.scatter(self.peaks, self.signal[self.peaks], c='r', label="Peaks")
+        self.ax.legend()
+        self.ax.set_title("Right-click to REMOVE peaks. Click button to ADD.")
+        self.ax.set_xlabel("Samples")
+        self.ax.set_ylabel("Amplitude")
+        plt.subplots_adjust(bottom=0.15)  # leave space for button
+        plt.show()
+
+    #button to initiate add peak mode
+    def toggle_add_peak_mode(self, event):
+        self.adding_peak_mode = not self.adding_peak_mode
+        print("Add mode ON" if self.adding_peak_mode else "Add mode OFF")
+
+    #button to initate cut mode
+    def toggle_cut_mode(self, event):
+        """Toggle the cutting mode on and off."""
+        self.cut_mode = not self.cut_mode
+        print("Cut mode ON" if self.cut_mode else "Cut mode OFF")
+        # Update the status box with the current mode
+        self.status_box.set_val(
+            "Cut mode ON. Shift + Left click to define start and end of cut." if self.cut_mode else "Cut mode OFF. Right-click to remove peaks.")
+
+    def _draw_cut_line(self, x, color):
+        """Draws a vertical line on the plot for start/end of the cut."""
+        line = self.ax.axvline(x=x, color=color, linestyle='--', linewidth=1.5)
+        self.cut_lines.append(line)  # Store the line object in the list
+        plt.draw()
+
+    def _apply_cut(self):
+        """Applies the cut by removing the selected section from the signal and peaks."""
+        start, end = sorted([self.cut_start, self.cut_end])  # Sort to ensure start is before end
+
+        # Safety check to ensure bounds are valid
+        start = max(0, start)
+        end = min(len(self.signal), end)
+
+        self.cut_history.append((start, end)) #save cuts
+        self.signal = np.concatenate((self.signal[:start], self.signal[end:])) # Cut out the selected region from the signal
+        self.peaks = [p for p in self.peaks if p < start or p > end]  # Remove peaks in the cut region
+
+        # Adjust remaining peaks after the cut
+        self.peaks = [p if p < start else p - (end - start) for p in self.peaks]
+
+        self._clear_cut_lines()  # Clear the cut lines after applying the cut
+        self.update_plot()  # Update the plot to reflect the changes
+
+    #removes markers lines from the plot
+    def _clear_cut_lines(self):
+        for line in self.cut_lines:
+            line.remove()
+        self.cut_lines.clear()
+        self.cut_start = None
+        self.cut_end = None
+        plt.draw()
+
+    def onclick(self, event):
+        if event.inaxes != self.ax or event.xdata is None:
+            return  # Ignore clicks outside the plot area
+
+        # Ensure xdata is an integer
+        idx = int(event.xdata)  # Convert xdata (click position) to integer for indexing
+
+        # Handle cut mode (shift + left click)
+        if self.cut_mode and event.button == 1 and event.key == 'shift':
+            if self.cut_start is None:
+                self.cut_start = idx  # Set the start time (convert to integer)
+                self._draw_cut_line(idx, 'green')  # Draw a green line for the start time
+                self.status_box.set_val("Start time set. Now shift+left click to set stop time.")
+            elif self.cut_end is None:
+                self.cut_end = idx  # Set the end time (convert to integer)
+                self._draw_cut_line(idx, 'red')  # Draw a red line for the end time
+
+                # Additional check: Ensure start and end are within the valid range
+                if 0 <= self.cut_start < len(self.signal) and 0 <= self.cut_end < len(self.signal):
+                    self._apply_cut()  # Apply the cut
+                    self.cut_mode = False  # Exit cut mode
+                    self.status_box.set_val("Cut applied.")  # Update status box
+                else:
+                    self.status_box.set_val("Invalid cut range. Try again.")  # Invalid range
+            return
+
+        # Handle peak removal (right-click near peak)
+        if event.button == 3:  # right-click to remove
+            if self.peaks:
+                closest_peak = min(self.peaks, key=lambda x: abs(x - idx))
+                if abs(closest_peak - idx) < self.fs * 0.2:  # Within 200ms
+                    self.ax.scatter(closest_peak, self.signal[closest_peak], c='yellow', s=100, label='Removed Peak')
+                    plt.draw()
+                    plt.pause(0.5)
+                    if closest_peak in self.peaks:
+                        self.peaks.remove(closest_peak)
+                        print(f"Deleted peak at index {closest_peak}")
+                    self.update_plot()
+
+        # Handle peak addition (Left-click to add)
+        elif event.button == 1 and self.adding_peak_mode:  # Left-click to add peak
+            if 0 <= idx < len(self.signal):
+                window_size = int(0.05 * self.fs)  # Define a window around the click (50ms)
+                start = max(0, idx - window_size)
+                end = min(len(self.signal), idx + window_size)
+                local_peak_idx = start + self.signal[start:end].argmax()
+                self.peaks.append(local_peak_idx)
+                self.peaks.sort()
+                print(f"Added peak at index {local_peak_idx}")
+                self.update_plot()
+
+
+    def update_plot(self):
+        # Save current zoom/pan limits
+        xlim = self.ax.get_xlim()
+        ylim = self.ax.get_ylim()
+
+        # Redraw plot contents without clearing zoom
+        self.ax.clear()
+        self.ax.plot(self.signal, label="ECG")
+        self.scatter = self.ax.scatter(self.peaks, self.signal[self.peaks], c='r', label="Peaks")
+        self.ax.legend()
+        self.ax.set_title("Right-click to REMOVE peaks. Click button to ADD.")
+        self.ax.set_xlabel("Samples")
+        self.ax.set_ylabel("Amplitude")
+
+        # Restore previous zoom/pan
+        self.ax.set_xlim(xlim)
+        self.ax.set_ylim(ylim)
+
+        plt.draw()
+
+    def get_cleaned_peaks(self):
+        return self.peaks
+
+
+# Initialize an empty list to store HRV values for each block
+hrv_data = []
+
+#to loop through each block
+block_info = {
+    'baseline': (baseline_enhance_ecg, baseline_peak_indices),
+    'arousing': (arousing_enhance_ecg, arousing_peak_indices),
+    'calming': (calming_enhance_ecg, calming_peak_indices)
+}
+
+
+#setting up output directory to save updated peaks list
+output_dir = path / 'Updated peak lists'
+output_dir.mkdir(exist_ok=True)
+
+##extract base name for labelling output
+input_file = Path(ecg)
+base_name = input_file.stem  # This will give '01CHA' from '01CHA.edf'
+
+
+
+##START MANUAL PEAK REVIEW
+cleaned_peaks_dict = {}
+timestamps_dict = {}
+
+# Convert cleaned global peak indices to local timestamps
+block_start_indices = {
+    'baseline': baseline_start_idx,
+    'arousing': arousing_start_idx,
+    'calming': calming_start_idx
+}
+
+# Instead of storing the global indices, store the local ones
+for block_name, (signal, peaks) in block_info.items():
+    print(f"\nStarting manual peak review for: {block_name.upper()} block")
+    reviewer = PeakReviewer(signal, peaks, sampling_freq)
+    plt.show(block=True)  # Wait for manual editing
+    # Get the cleaned (local) peaks without subtracting the block start
+    local_cleaned_peaks = reviewer.get_cleaned_peaks()
+    cleaned_peaks_dict[block_name] = local_cleaned_peaks
+    timestamps_dict[block_name] = sliced_timestamps_arr[block_name]
+
+
+
+#debug - check indices
+cleaned_timestamps_dict = {}
+for block_name, cleaned_peaks in cleaned_peaks_dict.items():
+    timestamps = timestamps_dict[block_name]
+    print(f"Block: {block_name}, timestamps length: {len(timestamps)}, max cleaned index: {max(cleaned_peaks)}")
+    # Use the local indices directly
+    cleaned_timestamps = [timestamps[p] for p in cleaned_peaks if 0 <= p < len(timestamps)]
+    cleaned_timestamps_dict[block_name] = cleaned_timestamps
+
+
+
+
+##HRV Calculations
+hrv_values_list = []
+
+##remove duplicate peaks
+def clean_peaklist(peaklist, min_rr_ms=300, fs=1024):
+    cleaned = []
+    cleaned_indices = []
+    last_peak = None
+    min_distance = int((min_rr_ms / 1000) * fs)
+
+    for i, peak in enumerate(peaklist):
+        if last_peak is None or (peak - last_peak) >= min_distance:
+            cleaned.append(peak)
+            cleaned_indices.append(i)
+            last_peak = peak
+
+    return cleaned, cleaned_indices
+
+#for block_name, cleaned_peaks in cleaned_peaks_dict.items():
+    # Get timestamps for the current block
+    #cleaned_timestamps = cleaned_timestamps_dict[block_name]
+
+    # Calculate RR intervals (in milliseconds)
+   #rr_intervals_ms = np.diff(cleaned_peaks) / sampling_freq * 1000
+    #rr_intervals_ms = np.insert(rr_intervals_ms, 0, np.nan)
+
+# Loop through each block of peaks
+for block_name, original_peaks in cleaned_peaks_dict.items():
+    # Clean the peaks for this block
+    cleaned_peaks, cleaned_indices = clean_peaklist(original_peaks, min_rr_ms=300, fs=sampling_freq)
+
+    # Get timestamps for the current block using the cleaned indices
+    cleaned_timestamps = [cleaned_timestamps_dict[block_name][i] for i in cleaned_indices]
+
+    # Calculate RR intervals (in milliseconds)
+    rr_intervals_ms = np.diff(cleaned_peaks) / sampling_freq * 1000
+    rr_intervals_ms = np.insert(rr_intervals_ms, 0, np.nan)
+
+    # HRV Analysis
+    manual_hrv = process_rr(rr_intervals_ms, label=f'Manual - {block_name.capitalize()}')
+
+    # Store HRV values for the current block
+    hrv_values = {
+        'block': block_name,
+        'RMSSD (ms)': manual_hrv['RMSSD (ms)'],
+        'SDNN (ms)': manual_hrv['SDNN (ms)'],
+        'AVNN (ms)': manual_hrv['AVNN (ms)'],
+        'IBI (ms)': manual_hrv['IBI (ms)'],
+        'BPM': manual_hrv['BPM'],
+        'NN50': manual_hrv['NN50'],
+        'pNN50 (%)': manual_hrv['pNN50 (%)'],
+        'SD1 (ms)': manual_hrv['SD1 (ms)'],
+        'SD2 (ms)': manual_hrv['SD2 (ms)'],
+        'SD1/SD2': manual_hrv['SD1/SD2'],
+        'VLF power': manual_hrv['VLF power'],
+        'LF power': manual_hrv['LF power'],
+        'HF power': manual_hrv['HF power'],
+        'Total power': manual_hrv['Total power'],
+        'LF/HF ratio': manual_hrv['LF/HF ratio'],
+        'VLF perc': manual_hrv['VLF perc'],
+        'LF perc': manual_hrv['LF perc'],
+        'HF perc': manual_hrv['HF perc']
+    }
+
+    # Add the HRV values to the list for this block
+    hrv_values_list.append(hrv_values)
+    hrv_data.append(hrv_values)
+
+    # Save cleaned peak list for the current block
+    peak_df = pd.DataFrame({
+        'Peak Index': cleaned_peaks,
+        'Timestamp': cleaned_timestamps,
+        'RR Interval (ms)': rr_intervals_ms
+    })
+
+    # Save CSV
+    block_save_path = output_dir / f"{base_name}_cleaned_peaks.{block_name}.csv"
+    peak_df.to_csv(block_save_path, index=False)
+    print(f"Saved cleaned peak list for {block_name.upper()} to: {block_save_path}")
+
+
+# After processing all blocks, create a DataFrame for HRV values
+hrv_df = pd.DataFrame(hrv_data)
+
+# Save the HRV values to a single CSV file
+hrv_csv_path = output_dir / f"{base_name}_hrv_values.csv"
+hrv_df.to_csv(hrv_csv_path, index=False)
+
+print(f"\n HRV values saved to: {hrv_csv_path}")

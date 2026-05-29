@@ -6,7 +6,6 @@ library(ggplot2)
 
 data <- read.csv("0000_CHANGES_HRV_OUTPUT.csv", header=TRUE)
 
-#checks on data
 head(data)
 
 #check & change to factors
@@ -53,20 +52,12 @@ print(gender_count)
 
 
 ##Check for normal distribution##
-###check distribution & do bonferroni correction for multiple comparisons
-
-#results - mixed TRUE / FALSE - will assume non-parametric but need to remember to check! 
-
-# Select only numeric columns (excluding the first column)
 numeric_data <- data[, sapply(data, is.numeric)][, -1]
-# Run Shapiro-Wilk test on all numeric columns (apart from first - participant ID)
 normality_tests <- sapply(numeric_data, function(x) shapiro.test(x)$p.value)
 
-# Bonferroni correction
 alpha <- 0.05  #significance level
 bonferroni_threshold <- alpha / length(normality_tests)  # Adjusted alpha
 
-# Output results
 normality_results <- data.frame(Variable = names(normality_tests),
                                 P_Value = normality_tests,
                                 Normal_Distribution = normality_tests > bonferroni_threshold)
@@ -77,19 +68,19 @@ print(normality_results)
 
 ##check for sig differences in age/gender between case & control
 
-#age (levenes homogeneity & t-test)
-leveneTest(Age ~ Group, data = data) #ns
+#age 
+leveneTest(Age ~ Group, data = data) 
 
 t_test_age <- t.test(Age ~ Group, data = data)
-print(t_test_age) #ns
+print(t_test_age) 
 
 
-#gender (chi square)
+#gender 
 contingency_table <- table(data$Group, data$Gender)
 print(contingency_table)
 
 chi_square_test_gender <- chisq.test(contingency_table)
-print(chi_square_test_gender) #n.s.
+print(chi_square_test_gender)
 
 
 ##basic t-tests
@@ -98,10 +89,8 @@ print(t_test)
 
 
 
-####convert data to long & remove NA's (clean data)
-#necessary for multivariate stats
+####convert data to long & remove NA's
 
-#convert all data into long format (so there is a 'condition' variable)
 data_long <- data %>%
   pivot_longer(
     cols = -c(Participant.ID, Group, Gender, Age),  # Keep participant/group variables
@@ -109,17 +98,14 @@ data_long <- data %>%
     names_sep = "\\.",  # Assumes variable names are formatted like "rmssd_baseline"
     values_to = "Value"  # Stores the actual data values
   )
-
-# Check the structure
 head(data_long)
 
-# Remove participants with ANY missing values across all dependent variables
+
 data_cleaned <- data_long %>%
   group_by(Participant.ID) %>%
   filter(!any(is.na(Value))) %>%  # Remove participants with any NA in any metric
   ungroup()  # Ungroup to prevent issues in later analyses
 
-# Check structure
 head(data_cleaned)
 
 
@@ -127,20 +113,12 @@ head(data_cleaned)
 ###check whether we need to control for age, beats rejected, recording length
 
 #age
-#but don't really need to control for it as groups are well-matched
 cor_age_results <- data_cleaned %>%
   group_by(Metric) %>%
   summarise(correlation = cor.test(Age, Value, method = "spearman", use = "pairwise.complete.obs")$estimate,
             p_value = cor.test(Age, Value, method = "spearman", use = "pairwise.complete.obs")$p.value)
 
 print(cor_age_results, n = 23)
-
-
-###need to look at spearman between beats rejected & recording length with all metrics
-
-#beats rejected - sig associated with IBI 
-#recording length - sig w/: vlf perc, hf perc, hf nu, breathing rate, lf nu
-  #if correcting for multiple comparisons - only one that would last is vlf perc (hf perc close)
 
 
 ##beats rejected
@@ -210,22 +188,17 @@ print(cor_length_results, n = Inf)
 
 ###Multivariate Stats###
 
-##make sure group & condition are factors
 data_cleaned$Participant.ID <- as.factor(data_cleaned$Participant.ID)
 data_cleaned$Condition <- as.factor(data_cleaned$Condition)
 data_cleaned$Group <- as.factor(data_cleaned$Group)
 
 
-##ART MODEL -- for non-parametric & repeated measures 
-##investigate - what does the '1' mean in art model 
 
 ##Run Art ANOVA for specific list of variables
 
-# Define the specific list of metrics you want to analyze
 selected_metrics <- c("bpm", "ibi", "rmssd", "sdnn", "pnn50", "vlf", 
                       "lf", "hf", "s", "sd1", "sd2") 
 
-# Loop through selected metrics and run ART ANOVA
 anova_results <- lapply(selected_metrics, function(m) {
   model <- art(Value ~ Group * Condition + (1 | Participant.ID), 
                data = data_cleaned %>% filter(Metric == m))
@@ -233,16 +206,7 @@ anova_results <- lapply(selected_metrics, function(m) {
   return(list(Metric = m, ANOVA = anova(model)))
 })
 
-# Print results
 anova_results
-
-
-#test to see if random effect is needed: 
-#results - show lots of variance in rmssd between participants so random effect is suitable
-library(lme4)
-test_model <- lmer(Value ~ Group * Condition + (1 | Participant.ID), data = data_cleaned %>% filter(Metric == "rmssd"))
-summary(test_model)
-
 
 
 

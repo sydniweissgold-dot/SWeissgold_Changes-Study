@@ -1,0 +1,161 @@
+## import libs (if you don't have -> 'pip install heartpy' in terminal)
+from os.path import exists
+import heartpy as hp
+import mne
+import numpy as np
+import os
+import pandas as pd
+from pathlib import Path
+from datetime import datetime, timedelta
+import matplotlib
+from heartpy import enhance_peaks
+
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+plt.ion()
+
+##check matplotlib is working
+print(matplotlib.get_backend())
+plt.switch_backend("TkAgg")  # or "QtAgg"
+
+
+#Define paths for data sources & outputs
+path = Path('U:/Datastore/CMVM/sbms/groups/INCR-PWC-psychiatry/CHANGES/Data/ActiHeartData')
+excel_path = Path('U:/Datastore/CMVM/sbms/groups/INCR-PWC-psychiatry/CHANGES/Data/Psychopy Data/0000_compiled psychopy data.xlsx')
+output_dir = path / 'ECG_outputs' #output directory for storing results
+output_dir.mkdir(exist_ok=True) #ensure output directory exists
+
+#Load excel file containing cut times and segment information
+time_excel = pd.read_excel(excel_path)
+
+#Define the list of ECG files to process
+ecg_files = ['01CHA.edf', '05CHA.edf', '10CHA.edf', '14CHA.edf', '16CHA.edf',
+             '18CHA.edf', '20CHA.edf', '22CHA.edf', '24CHA.edf', '25CHA.edf', '27CHA.edf', '29CHA.edf', '31CHA.edf', '33CHA.edf', '35CHA.edf', '38CHA.edf', '40CHA.edf', '41CHA.edf']
+sampling_freq = 1024 #define sampling frequency
+high_cutoff = 40.0 #for bandpass filter
+
+#Store all processed results
+all_results = []
+
+#Loop through each ECG file for processing
+for ecg in ecg_files:
+    try:
+        print(f"Processing {ecg}...")
+
+        # Load ECG data from .edf files
+        ecg_raw = mne.io.read_raw_edf(path / ecg, exclude=('X', 'Y', 'Z'), preload=True)
+        ecg_array = ecg_raw.get_data()
+        ecg_flat = np.ndarray.flatten(ecg_array)
+
+        # Extract corresponding participant data from the Psychopy Excel file
+        participant_row = time_excel[time_excel['Participant ID'] == ecg]
+        if participant_row.empty:
+            print(f"No matching participant found for {ecg}, skipping.")
+            continue
+
+        # Extract cut times for start/end of ECG
+        start_cut, end_cut = participant_row[['Start Cut', 'End Cut']].values[0]
+        start_index, end_index = int(start_cut * sampling_freq), len(ecg_flat) - int(end_cut * sampling_freq)
+        sliced_ecg_flat = ecg_flat[start_index:end_index]
+
+        # Extract relevant timestamps from Psychopy Excel
+        time_columns = ['Recording Start Time', 'Baseline Start', 'Baseline End',
+                        'Arousing Start', 'Arousing End', 'Calming Start', 'Calming End']
+        time_values = [participant_row[col].values[0] for col in time_columns]
+
+        # START: Print extracted times for debugging
+        print(f"Extracted timestamps for {ecg}:")
+        for col, val in zip(time_columns, time_values):
+            print(f"  {col}: {val}")
+
+        # Ensure timestamps are valid
+        if any(pd.isnull(time_values)):
+            print(f"️ Missing timestamps in Excel for {ecg}, skipping.")
+            continue
+
+        start_time = datetime.combine(datetime.today(), time_values[0])
+
+        # Convert timestamps to seconds relative to recording start time
+        time_seconds = [(datetime.combine(datetime.today(), t) - start_time).total_seconds() for t in time_values[1:]]
+
+        # Print computed time differences
+        print(f"Time differences for {ecg}: {time_seconds}")
+
+        time_indices = [int(t * sampling_freq) for t in time_seconds]
+        print(f"Recording length in seconds: {len(ecg_flat) / sampling_freq}")
+        print(f"Extracted time values: {time_values}")
+        print(f"Computed time differences (seconds): {time_seconds}")
+        print(f"Computed time indices: {time_indices}")
+
+        # Ensure time indices don’t exceed ECG length
+        if any(idx >= len(ecg_flat) for idx in time_indices):
+            print(f" Invalid time indices for {ecg}, skipping.")
+            continue
+
+        # Extract ECG segments for each block (Baseline, Arousing, Calming)
+        baseline_ecg = ecg_flat[time_indices[0]:time_indices[1]]
+        arousing_ecg = ecg_flat[time_indices[2]:time_indices[3]]
+        calming_ecg = ecg_flat[time_indices[4]:time_indices[5]]
+
+        # Print length (in seconds) of each block
+        print(f"Baseline block length: {(time_indices[1] - time_indices[0]) / sampling_freq} seconds")
+        print(f"Arousing block length: {(time_indices[3] - time_indices[2]) / sampling_freq} seconds")
+        print(f"Calming block length: {(time_indices[5] - time_indices[4]) / sampling_freq} seconds")
+
+        # Define a function to apply a bandpass filter to ECG data
+        def filter_ecg(data):
+            return mne.filter.filter_data(data, sfreq=sampling_freq, h_freq=high_cutoff, l_freq=None, method='fir')
+
+        # Apply filtering to each ECG segment
+        baseline_filtered = filter_ecg(baseline_ecg)
+        arousing_filtered = filter_ecg(arousing_ecg)
+        calming_filtered = filter_ecg(calming_ecg)
+
+        # Define a function to enhance ECG peaks
+        def enhance_ecg(data):
+            return hp.enhance_ecg_peaks(data, sampling_freq, iterations=2, aggregation='mean', notch_filter=True)
+
+        # Enhance peaks using the above function
+        baseline_enhanced = enhance_ecg(baseline_filtered)
+        arousing_enhanced = enhance_ecg(arousing_filtered)
+        calming_enhanced = enhance_ecg(calming_filtered)
+
+        # Process ECG data for HRV analysis
+        baseline_working, baseline_measures = hp.process(baseline_enhanced, sample_rate=sampling_freq, report_time=True, calc_freq=True)
+        arousing_working, arousing_measures = hp.process(arousing_enhanced, sample_rate=sampling_freq, report_time=True, calc_freq=True)
+        calming_working, calming_measures = hp.process(calming_enhanced, sample_rate=sampling_freq, report_time=True, calc_freq=True)
+
+        # Get recording lengths and beats rejected
+        recording_lengths = [(e - s) / sampling_freq for s, e in zip(time_indices[::2], time_indices[1::2])]
+        beats_rejected = [
+            len(baseline_working['removed_beats']),
+            len(arousing_working['removed_beats']),
+            len(calming_working['removed_beats'])
+        ]
+
+        # Add recording length & beats rejected to results
+        for measures, length, rejected in zip(
+            [baseline_measures, arousing_measures, calming_measures], recording_lengths, beats_rejected
+        ):
+            measures['Recording_Length (seconds)'] = length
+            measures['Number_of_Beats_Rejected'] = rejected
+
+        # Flatten results into a dictionary for saving
+        participant_id = ''.join(filter(str.isdigit, ecg))
+        measures_dict = {'baseline': baseline_measures, 'arousing': arousing_measures, 'calming': calming_measures}
+        flattened_measures = {'Participant_ID': participant_id}
+        for block, measures in measures_dict.items():
+            for key, value in measures.items():
+                flattened_measures[f"{block}_{key}"] = value
+
+        # Append results to the list
+        all_results.append(flattened_measures)
+
+    except Exception as e:
+        print(f"Error processing {ecg}: {e}")  # Handle errors gracefully
+        continue
+
+# Convert all results into a DataFrame and save to CSV
+all_results_df = pd.DataFrame(all_results)
+all_results_df.to_csv(output_dir / 'ecg_analysis_results_TEST.csv', index=False)
+print("Processing complete. Results saved.")

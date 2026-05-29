@@ -47,38 +47,27 @@ vars_to_modify <- c("ASD_1", "ASD_2", "ASD_3",
 #loop through & make modifications
 for (v in vars_to_modify) {
   
-  # trim whitespace
   data[[v]] <- trimws(data[[v]])
   
-  # convert empty string to NA
   data[[v]][data[[v]] == ""] <- NA
   
-  # optional: standardize to "yes"/"no" lowercase
-  # this does NOT change meaning, only formatting
   data[[v]] <- tolower(data[[v]])
-  
-  # convert to factor with allowed levels
+
   data[[v]] <- factor(data[[v]], levels = c("no", "yes"))
 }
-#check
 lapply(data[vars_to_modify], levels)
 
 
 ##check distribution of all numeric variables 
-  #RESULTS - 182 out of 337 variables are non-normally distributed; proceed with non-parametric tests generally
-    #update - 204 variables non-normally distributed
-#first - identify numeric columns
 numeric_vars <- names(data)[sapply(data, is.numeric)]
 length(numeric_vars)
 
-#next - run shapiro wilks on all numeric columns
 normality_results <- map_df(
   numeric_vars,
   \(var) {
     x <- data[[var]]
     x <- x[!is.na(x)]   # remove NA
     
-    # Shapiro test requires at least 3 unique values
     if (length(unique(x)) < 3) {
       return(tibble(variable = var, p_value = NA, note = "insufficient variation"))
     }
@@ -107,7 +96,6 @@ non_normal <- normality_results %>%
 print(non_normal, n = Inf)
 
 #force check mean_severity columns (lots of NA's so not included above)
-#BOTH NORMAL ? // lots of NAs
 shapiro.test(na.omit(data$mean_severity_2))
 shapiro.test(na.omit(data$mean_severity_3))
 
@@ -115,11 +103,8 @@ shapiro.test(na.omit(data$mean_severity_3))
 ###start descriptive stats
 
 ##SAMPLE SIZE for each time point
-
-# Specify the time point columns
 timepoint_vars <- c("Time.Point.1", "Time.Point.2", "Time.Point.3")
 
-# Make sure "yes"/"no" values are consistent (trim whitespace, lowercase)
 data <- data %>%
   mutate(across(all_of(timepoint_vars), ~ tolower(trimws(.))))
 
@@ -135,7 +120,6 @@ sample_sizes <- data %>%
 sample_sizes 
 
 #gender
-# Function to get counts by group, gender, and time point
 gender_by_timepoint <- map_df(timepoint_vars, function(tp) {
   data %>%
     filter(.data[[tp]] == "yes") %>%   # only include participants at this time point
@@ -158,7 +142,6 @@ mean_age_by_group <- data %>%
 
 mean_age_by_group
 
-##age in years w/ SD
 age_vars_yr <- c("Age_1", "Age_2", "Age_3")
 
 mean_age_by_group_yr <- data %>%
@@ -219,7 +202,7 @@ wilcox.test(AgeMon_3 ~ Group, data = t3_age, exact = FALSE)
 
 ####START INFERENTIAL STATS####
 
-##create custom theme
+##custom theme
 custom_theme <- theme(
   axis.title = element_text(size = 20, color = "black"),   # Axis titles
   axis.text = element_text(size = 15, color = "black"),    # Axis labels
@@ -244,9 +227,9 @@ data_long_SRS <- data %>%
   mutate(
     Time = as.integer(Time)
   ) %>%
-  filter(!is.na(SrsTotal))  # Keep only rows with a score
+  filter(!is.na(SrsTotal))  
 
-#linear mixed effects model (age x group)
+#linear mixed effects model
 model <- lmer(
   SrsTotal ~ Age * Group + (Age | Participant_ID),
   data = data_long_SRS
@@ -279,9 +262,9 @@ data_long_VineABC <- data %>%
   mutate(
     Time = as.integer(Time)
   ) %>%
-  filter(!is.na(VineABC))   # Keep only rows with a score
+  filter(!is.na(VineABC))  
 
-#linear mixed effects model (age x group)
+#linear mixed effects model
 vine_model <- lmer(
   VineABC ~ Age * Group + (Age | Participant_ID),
   data = data_long_VineABC
@@ -323,9 +306,9 @@ data_long_SEN <- data %>%
   mutate(
     Time = as.integer(Time)
   ) %>%
-  filter(!is.na(SP.TOT))   # Keep only rows with a score
+  filter(!is.na(SP.TOT))   
 
-#linear mixed effects model (age x group)
+#linear mixed effects model
 SEN_model <- lmer(
   SP.TOT ~ Age * Group + (Age | Participant_ID),
   data = data_long_SEN
@@ -366,7 +349,7 @@ data_long_ADHD <- data_combined %>%
   mutate(Time = as.integer(Time)) %>%
   filter(!is.na(CBCL_AP_combined))   # Removes rows where that timepoint doesn't exist
 
-#linear mixed effects model (age x group)
+#linear mixed effects model 
 ADHD_model <- lmer(
   CBCL_AP_combined ~ Age * Group + (Age | Participant_ID),
   data = data_long_ADHD
@@ -399,9 +382,9 @@ data_long_sleep <- data %>%
   mutate(
     Time = as.integer(Time)
   ) %>%
-  filter(!is.na(CSH.TSD33))   # Keep only rows with a score
+  filter(!is.na(CSH.TSD33))   
 
-#linear mixed effects model (age x group)
+#linear mixed effects model
 sleep_model <- lmer(
   CSH.TSD33 ~ Age * Group + (Age | Participant_ID),
   data = data_long_sleep
@@ -451,7 +434,6 @@ data_long_CBCL_INT <- data %>%
   ) %>%
   filter(!is.na(CBCL.INT.Total))
 
-#model
 CBCL_INT_model <- lmer(
   CBCL.INT.Total ~ Age * Group + (Age | Participant_ID),
   data = data_long_CBCL_INT
@@ -487,7 +469,7 @@ data_long_CBCL_EXT <- data %>%
   ) %>%
   filter(!is.na(CBCL.EXT.Total))
 
-#model -- CHANGE 1 -> AGE??? (when all longit. participants are added)
+
 CBCL_EXT_model <- lmer(
   CBCL.EXT.Total ~ Age * Group + (1 | Participant_ID),
   data = data_long_CBCL_EXT
@@ -560,7 +542,6 @@ data_long_CBCL_DEP <- data %>%
   ) %>%
   filter(!is.na(CBCL.W.D))
 
-#model-- CHANGE 1 -> AGE??? (when all longit. participants are added)
 CBCL_DEP_model <- lmer(
   CBCL.W.D ~ Age * Group + (1 | Participant_ID),
   data = data_long_CBCL_DEP
@@ -595,8 +576,7 @@ data_long_CBI_prevalence <- data %>%
   mutate(
     Time = as.integer(Time)
   ) %>%
-  filter(!is.na(CBI_Prevalence) & !is.na(Group))  # Keep only rows with a score
-
+  filter(!is.na(CBI_Prevalence) & !is.na(Group))  
 data_long_CBI_prevalence_clean <- data_long_CBI_prevalence %>%
   filter(!is.na(CBI_Prevalence))
 
@@ -634,7 +614,7 @@ data_long_mean_severity <- data %>%
   mutate(
     Time = as.integer(Time)
   ) %>%
-  filter(!is.na(mean_severity), !is.na(Group))  # Keep only rows with a score
+  filter(!is.na(mean_severity), !is.na(Group))
 
 #linear mixed effects model (age x group)
 CBI_mean_severity <- lmer(
@@ -645,8 +625,6 @@ CBI_mean_severity <- lmer(
 summary(CBI_mean_severity)
 
 
-####NEED TO ADJUST ALL NA's to ZEROs FOR THE PLOT !! 
-#make separate mean_severity column where all NA's are zero's
 ##**note mean severity columns w/ zero don't have _ between mean and severity (naming issues)
 data <- data %>%
   mutate(
@@ -663,7 +641,7 @@ data_long_mean_severity <- data %>%
   ) %>%
   mutate(Time = as.integer(Time))
 
-#plot
+
 ggplot(data_long_mean_severity,
        aes(x = Age, y = meanseverity,
            group = Participant_ID, color = Group)) +
@@ -679,11 +657,9 @@ ggplot(data_long_mean_severity,
   scale_color_discrete(na.translate = FALSE) +
   custom_theme
 
-#need to remove NA's from plot
 
 
 ##mixed model for CBI_SIB 
-#convert data to long WITH FILTERING OUT 0's IN SIB
 data_long_SIB_Severity <- data %>%
   pivot_longer(
     cols = c(SIB_Severity_2, SIB_Severity_3,
@@ -710,7 +686,6 @@ data_long_SIB_Severity_SYNGAP <- data_long_SIB_Severity %>%
   mutate(Participant_ID = droplevels(Participant_ID))
 
 
-#run model
 SIB_Severity_model <- lmer(
   SIB_Severity ~ Age + (1 | Participant_ID),
   data = data_long_SIB_Severity_SYNGAP
@@ -739,7 +714,6 @@ ggplot(data_long_SIB_Severity_SYNGAP,
 
 
 ##mixed model for CBI_PAG
-#convert data to long WITH FILTERING OUT 0's IN PAG
 data_long_PAG_Severity <- data %>%
   pivot_longer(
     cols = c(PAG_Severity_2, PAG_Severity_3,
@@ -791,7 +765,6 @@ ggplot(data_long_PAG_Severity_SYNGAP,
   guides(color = "none")
 
 ##mixed model for CBI_STB
-#convert data to long WITH FILTERING OUT 0's IN STB
 data_long_STB_Severity <- data %>%
   pivot_longer(
     cols = c(STB_Severity_2, STB_Severity_3,
@@ -818,7 +791,6 @@ data_long_STB_Severity_SYNGAP <- data_long_STB_Severity %>%
   mutate(Participant_ID = droplevels(Participant_ID))
 
 
-#run model
 STB_Severity_model <- lmer(
   STB_Severity ~ Age + (1 | Participant_ID),
   data = data_long_STB_Severity_SYNGAP

@@ -1,0 +1,600 @@
+import os
+from hmac import digest_size
+import numpy as np
+import pandas as pd
+import json
+import sys
+import matplotlib
+from pathlib import Path
+from mne.preprocessing.eyetracking import interpolate_blinks
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import seaborn as sns
+sns.set_context('notebook', font_scale=1.2)
+import subprocess
+from pyplr import graphing, utils, preproc
+from datetime import datetime, time, timedelta
+from pyplr.plr import PLR
+from scipy.signal import butter, filtfilt
+import pytz
+from scipy.interpolate import CubicSpline
+
+##get matplotlib working
+matplotlib.use("TkAgg")
+plt.ion()
+print(matplotlib.get_backend())
+
+
+# Some useful constants
+SAMPLE_RATE = 200
+##duration?
+##onset index?
+
+# Columns to load
+use_cols = ['section id',
+            'recording id',
+            'timestamp [ns]',
+            'pupil diameter left [mm]',
+            'pupil diameter right [mm]']
+
+
+####SET-UP####
+
+participant_id = '32_CHA'  # <<< change this per participant
+path = Path('U:/Datastore/CMVM/sbms/groups/INCR-PWC-psychiatry/CHANGES/Data/ActiHeartData') ##this might not be correct - CHECK!!
+
+
+##find participant folder
+participant_folder = base_path / participant_id
+if not participant_folder.exists():
+    raise FileNotFoundError(f"Participant folder not found: {participant_folder}")
+
+#find 2nd (inner) folder (e.g."15_cha_abcde")
+#(find the first folder that starts with the participant ID)
+matching_folders = [f for f in participant_folder.iterdir() if f.is_dir() and f.name.lower().startswith(participant_id.split('_')[0].lower())]
+
+if not matching_folders:
+    raise FileNotFoundError(f"No subfolder found for {participant_id} inside {participant_folder}")
+
+data_folder = matching_folders[0]
+print(f"Using data folder: {data_folder}")
+
+
+####LOAD REQUIRED FILES####
+eye_file = data_folder / '3d_eye_states.csv'
+blinks_file = data_folder / "blinks.csv"
+info_file = data_folder / "info.json"
+
+#checks to make sure files exist
+if not eye_file.exists():
+    raise FileNotFoundError(f"Missing file: {eye_file}")
+if not blinks_file.exists():
+    raise FileNotFoundError(f"Missing file: {blinks_file}")
+if not info_file.exists():
+    raise FileNotFoundError(f"Missing file: {info_file}")
+if eye_file.exists() and blinks_file.exists() and info_file.exists():
+        print("All required files exists")
+else:
+    raise FileNotFoundError("One or more required files are missing")
+
+
+####ADD IN NEW METHODS - for plotting both eyes###(in chapter / paper)
+
+#first - define function to plot selected best eye w/ blinks (and remove blinks)
+def select_best_eye(eye_df):
+    """Determine which eye has fewer NaNs (more valid samples)."""
+    left_valid = eye_df['pupil diameter left [mm]'].notna().sum()
+    right_valid = eye_df['pupil diameter right [mm]'].notna().sum()
+
+    if left_valid >= right_valid:
+        best_eye = 'left'
+        pupil_col = 'pupil diameter left [mm]'
+    else:
+        best_eye = 'right'
+        pupil_col = 'pupil diameter right [mm]'
+
+    print(f"Best eye selected: {best_eye} ({max(left_valid, right_valid)} valid samples pre-blink-removal)")
+
+    summary = {
+        'participant_id': participant_id,
+        'left_valid_samples_pre': left_valid,
+        'right_valid_samples_pre': right_valid,
+        'best_eye': best_eye,
+        'best_eye_valid_samples_pre': max(left_valid, right_valid),
+    }
+
+    return best_eye, pupil_col, summary
+
+
+def plot_and_clean_best_eye(eye_df, blinks_df, start_timestamp, best_eye, pupil_col):
+    """Plot best eye, highlight blinks, and remove blinks from pupil trace (WITH 100ms PADDING)."""
+    #also returns clean df and # of NaNs AFTER blink removal
+    df = eye_df.copy() #make copy to avoid messing w/ original
+    #converts timestamps from nanoseconds -> seconds (relative to the start of the recording)
+    df["timestamp_relative_s"] = (df["timestamp [ns]"] - start_timestamp) / 1e9
+    blinks_df["start_relative_s"] = (blinks_df["start timestamp [ns]"] - start_timestamp) / 1e9
+    blinks_df["end_relative_s"] = (blinks_df["end timestamp [ns]"] - start_timestamp) / 1e9
+
+    ### PLOT ### set up 2 row plot which shares axes
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 7), sharex=True, sharey=True)
+    fig.suptitle(f"{participant_id} - {best_eye.capitalize()} Eye", fontsize=18)
+
+    ##add padding (+/- 50ms)
+    padding_s = 0.05
+
+    # Top: Raw data with blink shading
+    ax1.plot(df["timestamp_relative_s"], df[pupil_col], color="cornflowerblue", label="Raw pupil")
+    #loop through blink events & shade gray
+    for _, b in blinks_df.iterrows():
+        start = b["start_relative_s"] - padding_s
+        end = b["end_relative_s"] + padding_s
+        ax1.axvspan(start, end, color="lightgray", alpha=0.5)
+    #label and style plot
+    ax1.set_title("Raw Pupil Diameter with Blinks Highlighted")
+    ax1.set_ylabel("Pupil Diameter (mm)")
+    ax1.grid(True)
+    ax1.legend()
+
+    # Bottom: Blinks removed
+    clean_df = df.copy() #second copy created for blink-cleaning
+    #loop through blinks & find timestamps corresponding to blink & remove that period
+    for _, b in blinks_df.iterrows():
+        blink_start = b["start_relative_s"] - padding_s
+        blink_end = b["end_relative_s"] + padding_s
+        blink_mask = (
+            (clean_df["timestamp_relative_s"] >= blink_start) &
+            (clean_df["timestamp_relative_s"] <= blink_end)
+        )
+        clean_df.loc[blink_mask, pupil_col] = np.nan
+
+    #plot cleaned data
+    ax2.plot(clean_df["timestamp_relative_s"], clean_df[pupil_col], color="mediumseagreen", label="Cleaned pupil")
+    ax2.set_title("Pupil Diameter with Blinks Removed")
+    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Pupil Diameter (mm)")
+    ax2.grid(True)
+    ax2.legend()
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95]) #adjust spacing so titles don't overlap
+    plt.show() #
+
+    # Count valid samples AFTER blink removal
+    data_valid_after_blinks_removed = clean_df[pupil_col].notna().sum()
+
+    return clean_df, data_valid_after_blinks_removed
+
+
+
+##load data & apply the functions to the data (select_best_eye & plot_and_clean_best_eye) & PLOT
+
+#first - load data
+eye_df = pd.read_csv(eye_file)
+blinks_df = pd.read_csv(blinks_file)
+with open(info_file) as f:
+    info_json = json.load(f)
+start_timestamp = info_json["start_time"]
+
+# Select best eye based on raw data (before blink removal)
+best_eye, pupil_col, summary = select_best_eye(eye_df)
+
+# Plot and remove blinks from that eye only
+clean_df, data_valid_after_blinks_removed = plot_and_clean_best_eye(eye_df, blinks_df, start_timestamp, best_eye, pupil_col)
+
+# Add post-blink info to summary
+summary['best_eye_valid_samples_post'] = int(data_valid_after_blinks_removed)
+
+# Convert all values in summary dict to native Python types
+#necessary formatting step to be able to see summary
+summary_clean = {k: int(v) if isinstance(v, (np.integer, np.int64)) else v for k, v in summary.items()}
+
+# Print summary
+print(json.dumps(summary_clean, indent=2))
+
+
+###next step: interpolate blinks (using cubic spline method - Mathot et al 2018)
+
+##define a function to interpolate blinks (cubic spline) (## = annotation; # = code)
+#def interpolate_blinks(pupil_series, timestamps):
+    #"""Interpolate missing (NaN) values using cubic splie"""
+    #mask_valid = pupil_series.notna() #create boolean mask marking which entries in pupil data are valid
+
+    ##extract timestamps and corresponding pupil values where data is valid
+        #will form anchor points for cubic spline fit
+   # x_valid = timestamps[mask_valid]
+    #y_valid = pupil_series[mask_valid]
+
+    ##ensure enough points for cubic spline interpolation (needs 4 to create smooth curve)
+   # if len(x_valid) < 4:
+        #print("Not enough valid samples for cubic spline interpolation")
+        #return pupil_series.copy() ##do I want this?? or abort code if not enough values exist??
+
+    ##build cubic spline interpolator
+        ##extrapolate = false --> to ensure interpolation not conducted on edge cases
+    #cs = CubicSpline(x_valid, y_valid, extrapolate=False)
+
+    ##makes copy of input series so original data isn't overwritten
+    #interpolated = pupil_series.copy()
+
+    ##replace NaNs with interpolated values
+        ##for all timestamps where original data was missing (i.e. mask is false) - apply spline to estimate missing values)
+        ##result is new series with no NaNs (if interpolation was possible at every gap)
+    #interpolated[~mask_valid] = cs(timestamps[~mask_valid])
+
+   # return interpolated
+
+##Interpolation - LINEAR
+def interpolate_blinks_linear(pupil_series):
+    """Interpolate missing (NaN) values using linear interpolation."""
+   #use pandas built-in interpolation (linear, no extrapolation at edges)
+    return pupil_series.interpolate(method='linear', limit_direction='both')
+
+#plot / verify interpolation
+
+# Compute relative timestamps
+t_rel = (clean_df["timestamp [ns]"] - start_timestamp) / 1e9
+blink_starts = (blinks_df["start timestamp [ns]"] - start_timestamp) / 1e9
+blink_ends = (blinks_df["end timestamp [ns]"] - start_timestamp) / 1e9
+
+##run interpolation - CUBIC SPLINE
+#interpolated_pupil = interpolate_blinks(
+   # clean_df[pupil_col],
+  #  clean_df["timestamp [ns]"]
+#)
+
+#interpolation - LINEAR
+interpolated_pupil = interpolate_blinks_linear(clean_df[pupil_col])
+
+# Plot
+plt.figure(figsize=(15, 5))
+plt.title(f"{participant_id} — Pupil Interpolation Check", fontsize=16)
+# Plot original cleaned signal (with NaNs)
+plt.plot(t_rel, clean_df[pupil_col], label="Cleaned (NaNs)", color="gray", alpha=0.6, linestyle='--', linewidth=1.5)
+# Plot interpolated pupil signal
+plt.plot(t_rel, interpolated_pupil, label="Interpolated", color="mediumseagreen", linewidth=2)
+padding_s = 0.1  # same padding used in cleaning
+#highlight blink columns (w/ padding)
+for start, end in zip(blink_starts, blink_ends):
+    padded_start = start - padding_s
+    padded_end = end + padding_s
+    plt.axvspan(padded_start, padded_end, color="lightcoral", alpha=0.3)
+
+plt.xlabel("Time (s)")
+plt.ylabel("Pupil Diameter (mm)")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+##NEXT: APPLY BUTTERWORTH FILTER ###
+    ##CHECK: filtering by what factor? (check that this is the correct factor)
+
+##define butterworth filter function
+def butterworth_filter(data, sample_rate, cutoff_freq_hz, order=3):
+    nyquist = 0.5 * sample_rate
+    normal_cutoff = cutoff_freq_hz / nyquist
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+    filtered = filtfilt(b, a, data)
+    return filtered
+
+# Convert Series to DataFrame
+    # and keep both the interpolated pupil signal and the original nanosecond timestamps
+interpolated_df = pd.DataFrame({
+    "timestamp [ns]": clean_df["timestamp [ns]"].values,
+    "pupil_diameter": interpolated_pupil.values
+})
+# change timestamps [ns] to datetime
+interpolated_df["timestamp_dt"] = pd.to_datetime(interpolated_df["timestamp [ns]"], unit="ns")
+
+# Apply Butterworth filter
+interpolated_df["pupil_diameter_filtered"] = butterworth_filter(
+    interpolated_df["pupil_diameter"].to_numpy(),
+    sample_rate=SAMPLE_RATE,
+    cutoff_freq_hz=4,
+    order=3
+)
+
+# Plot
+plt.figure(figsize=(15, 5))
+plt.plot(t_rel, interpolated_df["pupil_diameter"], label="Interpolated", alpha=0.4, color="gray")
+plt.plot(t_rel, interpolated_df["pupil_diameter_filtered"], label="Filtered", color="dodgerblue")
+plt.legend()
+plt.grid(True)
+plt.xlabel("Time (s)")
+plt.ylabel("Pupil Diameter (mm)")
+plt.title("Butterworth Filter Applied")
+plt.show()
+
+##CHECK if butterworth worked
+# Get raw and filtered signals
+
+#####ADD TO EXPORTED CSV
+#standard deviation pre- and post-butterworth to see if there is a noise reduction
+raw = interpolated_df["pupil_diameter"].to_numpy(dtype=float)
+filtered = interpolated_df["pupil_diameter_filtered"].to_numpy(dtype=float)
+
+raw_std = float(np.nanstd(raw))
+filtered_std = float(np.nanstd(filtered))
+
+print(f"Std (raw):     {raw_std:.3f} mm")
+print(f"Std (filtered):{filtered_std:.3f} mm")
+
+
+
+####Add timestamps and divide into 3 blocks####
+
+##calling interpolated data (w/ filter applied)
+
+# Convert 3d_eye_states timestamps from nanoseconds to datetime (already done)
+interpolated_df['timestamp_dt'] = pd.to_datetime(interpolated_df['timestamp [ns]'], unit='ns')
+print(interpolated_df[['timestamp [ns]', 'timestamp_dt']].head(10))
+
+# Set the timezone to UTC (if it's not already UTC)
+#deleted when not in right timezone in current format
+#interpolated_df['timestamp_dt'] = interpolated_df['timestamp_dt'].dt.tz_localize('UTC', ambiguous='NaT')  # Localize to UTC if not already
+
+# Now, extract the time in hh:mm:ss format
+interpolated_df['timestamp_time'] = interpolated_df['timestamp_dt'].dt.strftime('%H:%M:%S')
+print(interpolated_df[['timestamp [ns]', 'timestamp_time']].head(10))
+
+
+# Load the Excel file
+excel_path = "U:/Datastore/CMVM/sbms/groups/CDBS_SIDB_storage/PWC-psychiatry/CHANGES/Data/Psychopy Data/0000_compiled psychopy data_pupil_updated.xlsx"
+df_info = pd.read_excel(excel_path)
+
+
+# Filter for the correct participant
+subject_row = df_info[df_info['Participant ID'].str.contains(participant_id, case=False, na=False)]
+
+#check data format (i.e. datetime OR string) #if needed
+#print(type(subject_row['Baseline Start'].values[0]))
+
+if not subject_row.empty:
+    # Extract string versions of times from the matched row
+    baseline_start_str = subject_row['Baseline Start'].values[0]
+    baseline_end_str = subject_row['Baseline End'].values[0]
+    arousing_start_str = subject_row['Arousing Start'].values[0]
+    arousing_end_str = subject_row['Arousing End'].values[0]
+    calming_start_str = subject_row['Calming Start'].values[0]
+    calming_end_str = subject_row['Calming End'].values[0]
+else:
+    print(f"No matching row for subject ID: {participant_id}")
+
+##convert excel times from strings to datetime format
+def to_time(val):
+    """Convert Excel values (string, Timestamp, or datetime) to datetime.time"""
+    if isinstance(val, str):
+        return datetime.strptime(val, "%H:%M:%S").time()
+    elif isinstance(val, pd.Timestamp):
+        return val.time()
+    elif isinstance(val, datetime):
+        return val.time()
+    elif isinstance(val, time):  # already datetime.time
+        return val
+    else:
+        raise ValueError(f"Unsupported type: {type(val)}")
+
+baseline_start = to_time(baseline_start_str)
+baseline_end   = to_time(baseline_end_str)
+arousing_start = to_time(arousing_start_str)
+arousing_end   = to_time(arousing_end_str)
+calming_start  = to_time(calming_start_str)
+calming_end    = to_time(calming_end_str)
+
+
+##### Shift Excel times back by 1 hour to align with pupil recording clock
+def shift_time(t, hours=-1):
+    dt = datetime.combine(datetime.today(), t) + timedelta(hours=hours)
+    return dt.time()
+
+baseline_start = shift_time(baseline_start)
+baseline_end   = shift_time(baseline_end)
+arousing_start = shift_time(arousing_start)
+arousing_end   = shift_time(arousing_end)
+calming_start  = shift_time(calming_start)
+calming_end    = shift_time(calming_end)
+##end shifting excel times (delete if necessary for individual participants - based on when recordings were taken)
+
+
+# Convert the 'timestamp_time' column in the 'samples' DataFrame to datetime.time objects
+# This ensures that time comparisons will work correctly (i.e., time vs time, not string vs time)
+interpolated_df['timestamp_time'] = pd.to_datetime(interpolated_df['timestamp_time'], format='%H:%M:%S').dt.time
+
+# Define a helper function that checks if a given sample_time falls between a start and end time
+def is_within_time_range(sample_time, start_time, end_time):
+    return start_time <= sample_time <= end_time
+
+# Apply the filter function to create a subset of the data for each condition
+baseline_data = interpolated_df[interpolated_df['timestamp_time'].apply(is_within_time_range, args=(baseline_start, baseline_end))]
+arousing_data = interpolated_df[interpolated_df['timestamp_time'].apply(is_within_time_range, args=(arousing_start, arousing_end))]
+calming_data = interpolated_df[interpolated_df['timestamp_time'].apply(is_within_time_range, args=(calming_start, calming_end))]
+
+
+###Verify that the splits between conditions worked
+#print number of rows in each condition
+print(f"Total samples: {len(interpolated_df)}")
+print(f"Baseline samples: {len(baseline_data)}")
+print(f"Arousing samples: {len(arousing_data)}")
+print(f"Calming samples: {len(calming_data)}")
+
+#preview first few rows
+print("Baseline data timestamps:")
+print(baseline_data['timestamp_time'].head())
+
+print("\nArousing data timestamps:")
+print(arousing_data['timestamp_time'].head())
+
+print("\nCalming data timestamps:")
+print(calming_data['timestamp_time'].head())
+
+#check timestamps are within bounds
+# These should all return True
+print("All baseline timestamps within range:",
+      all(baseline_start <= t <= baseline_end for t in baseline_data['timestamp_time']))
+
+print("All arousing timestamps within range:",
+      all(arousing_start <= t <= arousing_end for t in arousing_data['timestamp_time']))
+
+print("All calming timestamps within range:",
+      all(calming_start <= t <= calming_end for t in calming_data['timestamp_time']))
+#checks over
+
+
+
+###then get mean pupil size for each condition###
+    ##next (or on R?) - get pupil size change from baseline
+
+baseline_mean = baseline_data['pupil_diameter'].mean()
+arousing_mean = arousing_data['pupil_diameter'].mean()
+calming_mean = calming_data['pupil_diameter'].mean()
+
+print(f"Mean pupil size (Baseline): {baseline_mean:.3f}")
+print(f"Mean pupil size (Arousing): {arousing_mean:.3f}")
+print(f"Mean pupil size (Calming): {calming_mean:.3f}")
+
+
+##calculate change in arousing from BASELINE
+    #note - positive value == pupil size increased from baseline -> e.g. arousing
+        #negative value == pupil size decreased from baseline -> e.g. arousing
+
+# Calculate changes from baseline
+change_arousing = arousing_mean - baseline_mean
+change_calming = calming_mean - baseline_mean
+
+#print changes - in mm?
+print(f"Change from baseline (Arousing): {change_arousing:.3f}")
+print(f"Change from baseline (Calming): {change_calming:.3f}")
+
+#get percentage
+percent_change_arousing = (change_arousing / baseline_mean) * 100
+percent_change_calming = (change_calming / baseline_mean) * 100
+
+print(f"Percent change from baseline (Arousing): {percent_change_arousing:.2f}%")
+print(f"Percent change from baseline (Calming): {percent_change_calming:.2f}%")
+
+
+##calculate change in arousing from CALMING
+change_arousing_from_calming = arousing_mean - calming_mean
+print(f"Change from calming to arousing: {change_arousing_from_calming:.3f}") #in mm?
+percent_change_arousing_from_calming = (change_arousing_from_calming / calming_mean) * 100
+print(f"Percent change from calming to arousing: {percent_change_arousing_from_calming:.2f}%")
+
+
+
+####BLINK COUNT ANALYSIS####
+# Convert blink timestamps to datetime
+blinks_df['start_dt'] = pd.to_datetime(blinks_df['start timestamp [ns]'], unit='ns')
+blinks_df['end_dt'] = pd.to_datetime(blinks_df['end timestamp [ns]'], unit='ns')
+
+def blink_within_block(blink_start, blink_end, start_time, end_time):
+    """Return True if any part of the blink overlaps with the block."""
+    return not (blink_end.time() < start_time or blink_start.time() > end_time)
+
+# Count blinks
+total_blinks = len(blinks_df)
+baseline_blinks = blinks_df[blinks_df.apply(lambda b: blink_within_block(b['start_dt'], b['end_dt'],
+                                                baseline_start, baseline_end), axis=1)]
+arousing_blinks = blinks_df[blinks_df.apply(lambda b: blink_within_block(b['start_dt'], b['end_dt'],
+                                                arousing_start, arousing_end), axis=1)]
+calming_blinks = blinks_df[blinks_df.apply(lambda b: blink_within_block(b['start_dt'], b['end_dt'],
+                                                calming_start, calming_end), axis=1)]
+
+print(f"Total blinks: {total_blinks}")
+print(f"Baseline blinks: {len(baseline_blinks)}")
+print(f"Arousing blinks: {len(arousing_blinks)}")
+print(f"Calming blinks: {len(calming_blinks)}")
+
+
+###get recording duration (i.e. sum of duration of basleine, arousing and calming blocks)
+# Create datetime objects for each block (using today's date just as a container)
+baseline_duration_s = (
+    datetime.combine(datetime.today(), baseline_end)
+    - datetime.combine(datetime.today(), baseline_start)
+).total_seconds()
+
+arousing_duration_s = (
+    datetime.combine(datetime.today(), arousing_end)
+    - datetime.combine(datetime.today(), arousing_start)
+).total_seconds()
+
+calming_duration_s = (
+    datetime.combine(datetime.today(), calming_end)
+    - datetime.combine(datetime.today(), calming_start)
+).total_seconds()
+
+# Total duration across the three blocks
+total_duration_s = baseline_duration_s + arousing_duration_s + calming_duration_s
+
+#Convert to minutes
+baseline_duration_min = baseline_duration_s / 60
+arousing_duration_min = arousing_duration_s / 60
+calming_duration_min = calming_duration_s / 60
+total_duration_min = total_duration_s / 60
+
+
+###export values to excel file
+# Step 1: Prepare mean pupil size data in the same format
+
+#####MAKE LABELS IN EXCEL CLEARER####
+
+pupil_data = [
+    {'Condition': 'Baseline', 'Mean Pupil Size': baseline_mean},
+    {'Condition': 'Arousing', 'Mean Pupil Size': arousing_mean},
+    {'Condition': 'Calming', 'Mean Pupil Size': calming_mean},
+    {'Condition': 'Arousing - Baseline', 'Mean Pupil Size': arousing_mean - baseline_mean},
+    {'Condition': 'Calming - Baseline', 'Mean Pupil Size': calming_mean - baseline_mean},
+    {'Condition': 'Arousing - Calming', 'Mean Pupil Size': arousing_mean - calming_mean},
+    {'Condition': 'Arousing % from Baseline', 'Mean Pupil Size': ((arousing_mean - baseline_mean) / baseline_mean) * 100},
+    {'Condition': 'Calming % from Baseline', 'Mean Pupil Size': ((calming_mean - baseline_mean) / baseline_mean) * 100},
+    {'Condition': 'Arousing % from Calming', 'Mean Pupil Size': ((arousing_mean - calming_mean) / calming_mean) * 100}
+]
+
+
+###exporting format
+# Build dictionary of summary values
+summary_export = {
+    'Participant ID': participant_id,
+    'Baseline Mean': baseline_mean,
+    'Arousing Mean': arousing_mean,
+    'Calming Mean': calming_mean,
+    'Arousing - Baseline': change_arousing,
+    'Calming - Baseline': change_calming,
+    'Arousing - Calming': change_arousing_from_calming,
+    'Arousing % from Baseline': percent_change_arousing,
+    'Calming % from Baseline': percent_change_calming,
+    'Arousing % from Calming': percent_change_arousing_from_calming,
+    'Std Pre Butterwort': raw_std,
+    'Std Post Butterworth': filtered_std,
+    'Best Eye': best_eye,
+    'Best Eye Valid Samples Pre': summary_clean['best_eye_valid_samples_pre'],
+    'Best Eye Valid Samples Post': summary_clean['best_eye_valid_samples_post'],
+    'Total Blinks': total_blinks,
+    'Baseline Blinks': len(baseline_blinks),
+    'Arousing Blinks': len(arousing_blinks),
+    'Calming Blinks': len(calming_blinks),
+    'Derivative Threshold (mm/s)': "N/A",
+    'Min Gap (s)': "N/A",
+    'Max Interpolation Gap (s)': "N/A",
+    'Padding (s)': "N/A",
+    'Masked Samples (%)': "N/A",
+    'Baseline Duration (min)': baseline_duration_min,
+    'Arousing Duration (min)': arousing_duration_min,
+    'Calming Duration (min)': calming_duration_min,
+    'Total Duration (min)': total_duration_min
+}
+
+# Convert to DataFrame (single row)
+summary_df = pd.DataFrame([summary_export])
+
+# Go up one level from raw data (so path is pupillometry data -> pupil output data)
+root_path = base_path.parent
+
+# Define the output directory, i.e. where to save exported .csv
+output_dir = root_path / "Pupil Output Data"
+output_dir.mkdir(parents=True, exist_ok=True)  # make sure folder exists
+
+# Build output path
+output_path = output_dir / f"{participant_id}_OUTPUT.csv"
+
+# Save summary to CSV
+summary_df.to_csv(output_path, index=False)
+print(f"\nPupil summary values saved to: {output_path}")

@@ -29,7 +29,6 @@ data_hrv       <- data_hrv %>% mutate(Age = as.character(Age))
 data_pupil     <- data_pupil %>% mutate(Age = as.character(Age))
 
 #combine all datasets
-  #method is to remove age, gender, group columns from all except hrv dataset
 data_combined <- data_behaviour %>%
   full_join(data_hrv %>% select(-Age, -Gender, -Group),
             by = "Participant.ID") %>%
@@ -101,11 +100,7 @@ data_combined <- data_combined %>%
 syngap_data <- data_combined %>%
   filter(Group == "SYNGAP")
 
-#example regression:
-summary(lm(SrsTotal ~ calming.rmssd, data = syngap_data))
-
-
-
+                                        
 ###run regression for SRS 
 regression_Srs <- map_df(
   vars_to_correlate,
@@ -210,10 +205,6 @@ View(regression_CSH_corr)
 
 
 ##regression for CBI severity
-
-##first - add mean_severity column (code taken from SSBP Behaviour Analysis)
-####CREATE CBI SEVERITY AVERAGE !!! 
-
 # Filter columns that end with 'Severity' and calculate the sum for each column
 column_names <- names(syngap_data)
 ##filter columns that end with 'severity'
@@ -236,7 +227,6 @@ print(overall_CBI_severity_mean)
 
 
 ##create mean severity column for all participants (both groups)
-##adapted so mean is calculated: sum of severity scores per participant divided by number of behaviours which have a severity score of 1 or greater
 syngap_data <- syngap_data %>%
   rowwise() %>%
   mutate(mean_severity = ifelse(
@@ -337,7 +327,7 @@ regression_STB <- map_df(
 View(regression_STB)
 
 
-##create CBCL's columns -- CHANGE BELOW
+##create CBCL's columns 
 syngap_data <- syngap_data %>%
   mutate(
     CBCL.INT.Total = coalesce(CBCL.INT, IBCL.INT),
@@ -417,14 +407,14 @@ data_combined <- data_combined %>%
 
 summary(data_combined$pnn50_change)
 
-#check pnn50 change distribution - NON-NORMALLY DISTRIBUTED
+#check pnn50 change distribution
 hist(data_combined$pnn50_change)
 shapiro.test(data_combined$pnn50_change)
 
 #t-test to see if pNN50 changes by group
 t.test(pnn50_change ~ Group, data = data_combined)
 
-###need to re-make CBCL INT/EXT, ANX, mean_severity in data_combined(only in data_syngap right now)
+
 data_combined <- data_combined %>%
   mutate(
     CBCL.INT.Total = coalesce(CBCL.INT, IBCL.INT),

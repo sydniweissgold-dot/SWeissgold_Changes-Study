@@ -48,20 +48,14 @@ vars_to_modify <- c("ASD_1", "ASD_2", "ASD_3",
 #loop through & make modifications
 for (v in vars_to_modify) {
   
-  # trim whitespace
   data[[v]] <- trimws(data[[v]])
   
-  # convert empty string to NA
   data[[v]][data[[v]] == ""] <- NA
   
-  # optional: standardize to "yes"/"no" lowercase
-  # this does NOT change meaning, only formatting
   data[[v]] <- tolower(data[[v]])
   
-  # convert to factor with allowed levels
   data[[v]] <- factor(data[[v]], levels = c("no", "yes"))
 }
-#check
 lapply(data[vars_to_modify], levels)
 
 
@@ -91,7 +85,7 @@ data <- data %>%
 
 
 
-####NEW ANALYSIS: PERSISTENCE
+####PERSISTENCE ANALYSIS
 
 #starting w/ SIB T2 & T3 (SYNGAP only)
 #filter for SYNGAP only
@@ -190,7 +184,7 @@ ggplot(STB_summary, aes(x = STB_persistence, y = n)) +
 
 ###try for CBCL Item 18
 
-##first - collapse 1 & 2's (both indicate SIB)
+##first - collapse 1 & 2's
 data_SYNGAP <- data_SYNGAP %>%
   mutate(
     CBCL_SIB_1_coll = ifelse(CBCL_SIB_1 >= 1, 1,
@@ -444,14 +438,13 @@ glm(SIB_persistent_binary ~ VineABC_2,
 
 ####MULTIVARIATE ANALYSES across ALL behav. factors
 
-###model doesn't seem to be a good fit (too many predictors & too few data points)
+###model doesn't seem to be a good fit 
 
 #SIB first
 glm(SIB_persistent_binary ~ VineABC_2 + SrsTotal_2,
     data = data_SIB_binary, family = binomial) |> summary()
 
 #lm w/ vif for multicollinearity
-  #vif > 5 indicates multicollinearity 
 vif(
   lm(
     VineABC_2 ~ SP.TOT_2 + SrsTotal_2 + CBCL_AP_combined_2 + CSH.TSD33_2,
@@ -503,8 +496,6 @@ vif(
 )
 
 
-###TO DO:
-###repeat for CBCL item?
 
 ##ADD ANS MEASURES
 
@@ -515,45 +506,37 @@ head(data_hrv)
 data_pupil <- read.csv("0000_CHANGES_PUPIL_OUTPUT.csv", header=TRUE)
 head(data_pupil)
 
-#remove underscore in pupil particpant ID (to match hrv)
 data_pupil$Participant.ID <- gsub("_", "", data_pupil$Participant.ID)
 
-#remove year and _ in behaviour data (to match hrv)
 data$Participant_ID <- data$Participant_ID |>
   str_extract("^\\d+_CHA") |>   # extract only the part like "01_CHA"
   str_replace("_", "")          # remove underscore → "01CHA"
-#same for data_SYNGAP
+
 data_SYNGAP$Participant_ID <- data_SYNGAP$Participant_ID |>
   str_extract("^\\d+_CHA") |>   # extract only the part like "01_CHA"
   str_replace("_", "")          # remove underscore → "01CHA"
 
 ##renaming age to avoid combination issues
-#rename age_HRV
 data_hrv <- data_hrv %>%
   rename(Age_HRV = Age)
-#same for pupil
 data_pupil <- data_pupil %>%
   rename(Age_pupil = Age)
-
-##same for participant ID in HRV/pupil - add '_'
 data_hrv <- data_hrv %>%
   rename(Participant_ID = Participant.ID)
 data_pupil <- data_pupil %>%
   rename(Participant_ID = Participant.ID)
 
 #combine all datasets
-#method is to remove gender, group columns from all except behaviour dataset (keeping Age_HRV & Age_pupil)
 data_combined <- data_SYNGAP %>%
   left_join(data_hrv %>% select(-Gender, -Group),
             by = "Participant_ID") %>%
   left_join(data_pupil %>% select(-Gender, -Group),
             by = "Participant_ID")
-# View the combined data
 head(data_combined)
 
-#change to factor
+
 data_combined$Best.Eye <- as.factor(data_combined$Best.Eye)
-#change to numeric
+
 cols_to_numeric <- c("baseline.NN50", "calming.NN50", "arousing.NN50", 
                      "Lux", "Best.Eye.Valid.Samples.Pre", "Best.Eye.Valid.Samples.Post",
                      "Total.Blinks", "Baseline.Blinks", "Arousing.Blinks", "Calming.Blinks", 
@@ -577,7 +560,7 @@ data_combined_SYNGAP <- data_combined %>%
   filter(Group == "SYNGAP")
 
 ##START ANS / PERSISTENCE STATS
-#try Kruskall-Wallis
+
 #SIB
 SIB_ANS_results <- lapply(physiology_vars, function(v) {
   formula <- as.formula(paste(v, "~ SIB_persistence"))
@@ -602,7 +585,7 @@ library(rstatix)
 kruskal_effsize(arousing.bpm ~ SIB_persistence, data = data_combined_SYNGAP)
 kruskal_effsize(arousing.ibi ~ SIB_persistence, data = data_combined_SYNGAP)
 
-#direction of effect
+#direction
 #bpm
 data_combined_SYNGAP %>%
   group_by(SIB_persistence) %>%
@@ -640,7 +623,7 @@ pairwise.wilcox.test(data_combined_SYNGAP$baseline.pnn50,
 #effect size
 kruskal_effsize(baseline.pnn50 ~ PAG_persistence, data = data_combined_SYNGAP)
 
-#direction of effect
+
 #pnn50
 data_combined_SYNGAP %>%
   group_by(PAG_persistence) %>%
@@ -676,7 +659,7 @@ pairwise.wilcox.test(data_combined_SYNGAP$calming.ibi,
 kruskal_effsize(calming.bpm ~ STB_persistence, data = data_combined_SYNGAP)
 kruskal_effsize(calming.ibi ~ STB_persistence, data = data_combined_SYNGAP)
 
-#direction of effect
+
 #bpm
 data_combined_SYNGAP %>%
   group_by(STB_persistence) %>%

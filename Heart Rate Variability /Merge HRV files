@@ -1,0 +1,76 @@
+import pandas as pd
+import os
+import re
+
+####put all data (baseline, arousing, calming) in one row
+# Set the folder where your CSV files are stored
+input_folder = "U:/Datastore/CMVM/sbms/groups/CDBS_SIDB_storage/PWC-psychiatry/CHANGES/Data/HRV Data_ecg outputs/Manual HRV Output"
+output_folder = "U:/Datastore/CMVM/sbms/groups/CDBS_SIDB_storage/PWC-psychiatry/CHANGES/Data/HRV Data_ecg outputs/Manual HRV Output"  # Change if you want to save in a different location
+
+# Ensure output folder exists
+os.makedirs(output_folder, exist_ok=True)
+
+# Loop through all CSV files in the folder
+for filename in os.listdir(input_folder):
+    if filename.endswith(".csv"):
+        file_path = os.path.join(input_folder, filename)
+
+        # Read CSV
+        df = pd.read_csv(file_path)
+
+        # Extract condition names from the first few rows
+        conditions = df.iloc[:3, 0].tolist()  # Assuming conditions are in the first column
+
+        # Extract metric names from the header row
+        metric_names = df.columns[1:]  # Exclude first column if it's the condition labels
+
+        # Transpose data so each condition is represented in column names
+        transformed_data = {}
+        for i, condition in enumerate(conditions):
+            for metric in metric_names:
+                transformed_data[f"{condition} {metric}"] = [df.iloc[i, df.columns.get_loc(metric)]]
+
+        # Convert to DataFrame
+        transformed_df = pd.DataFrame(transformed_data)
+
+        # Save the transformed file
+        output_file_path = os.path.join(output_folder, f"transformed_{filename}")
+        transformed_df.to_csv(output_file_path, index=False)
+
+        print(f"Processed and saved: {output_file_path}")
+
+
+###now - merge all csv's into one excel file
+
+
+# Set the folder where transformed CSV files are stored
+combined_output_path = os.path.join(output_folder, "0000_CHANGES_HRV_OUTPUT_MANUAL.xlsx")
+
+# List to store data from each transformed CSV
+all_data = []
+
+# Loop through transformed CSV files and read them
+for filename in os.listdir(output_folder):
+    if filename.startswith("transformed_") and filename.endswith(".csv"):
+        file_path = os.path.join(output_folder, filename)
+
+        # Read CSV into a DataFrame
+        df = pd.read_csv(file_path)
+
+        # Extract only the Participant ID (e.g., "19CHA" from "19CHA_ecg_output.csv")
+        match = re.search(r"(\d+CHA)", filename)
+        participant_id = match.group(1) if match else "Unknown"
+
+        # Insert as the first column with name "Participant ID"
+        df.insert(0, "Participant ID", participant_id)
+
+        # Append to the list
+        all_data.append(df)
+
+# Combine all data into a single DataFrame
+combined_df = pd.concat(all_data, ignore_index=True)
+
+# Save to an Excel file
+combined_df.to_excel(combined_output_path, index=False)
+
+print(f"Combined Excel file saved at: {combined_output_path}")
